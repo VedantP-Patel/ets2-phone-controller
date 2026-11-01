@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF0A0A0C</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="dark_gray">#FF1A1C20</color>
+    <color name="panel_bg">#FF141619</color>
+    <color name="accent_orange">#FFFFA726</color>
+    <color name="gas_green">#FF4CAF50</color>
+    <color name="brake_red">#FFF44336</color>
+</resources>
+

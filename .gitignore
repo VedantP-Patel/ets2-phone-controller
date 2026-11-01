@@ -1,0 +1,30 @@
+# Android & Gradle
+.gradle/
+build/
+*/build/
+android/build/
+android/app/build/
+*.apk
+*.aab
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# PC Host & Build Artifacts
+pc/ets2-controller.exe
+*.o
+*.obj
+pc/*.pdb
+pc/build/
+pc/test_log*.txt
+*.log
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+*~
