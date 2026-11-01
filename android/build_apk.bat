@@ -48,12 +48,12 @@ echo.
 REM Automatically install onto connected phone if ADB is available
 if exist "%ANDROID_HOME%\platform-tools\adb.exe" (
     echo Installing updated APK onto connected phone...
-    "%ANDROID_HOME%\platform-tools\adb.exe" install -r "app\build\outputs\apk\debug\app-debug.apk"
+    "%ANDROID_HOME%\platform-tools\adb.exe" install -r -d "app\build\outputs\apk\debug\app-debug.apk"
 ) else (
     where adb >nul 2>nul
     if %errorlevel%==0 (
         echo Installing updated APK onto connected phone...
-        adb install -r "app\build\outputs\apk\debug\app-debug.apk"
+        adb install -r -d "app\build\outputs\apk\debug\app-debug.apk"
     ) else (
         echo [INFO] Copy app\build\outputs\apk\debug\app-debug.apk to your phone to install.
     )
