@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -20,7 +19,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -36,7 +34,10 @@ data class ActionButtonDef(
     val label: String,
     val isPrimary: Boolean = false,
     val isWarning: Boolean = false,
-    val customColor: Color? = null
+    val customColor: Color? = null,
+    val swipeUpBit: Int? = null,
+    val swipeDownBit: Int? = null,
+    val longPressBit: Int? = null
 )
 
 @Composable
@@ -44,16 +45,12 @@ fun HighBeamIcon(color: Color, modifier: Modifier = Modifier.size(20.dp)) {
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-
-        // Headlight parabolic dome
         val dome = Path().apply {
             moveTo(w * 0.60f, h * 0.22f)
             quadraticBezierTo(w * 0.95f, h * 0.50f, w * 0.60f, h * 0.78f)
             close()
         }
         drawPath(dome, color = color, style = Stroke(width = 1.8.dp.toPx()))
-
-        // 5 straight parallel high-beam light rays
         for (i in 0 until 5) {
             val y = h * (0.28f + i * 0.11f)
             drawLine(
@@ -72,8 +69,6 @@ fun RetarderIcon(color: Color, modifier: Modifier = Modifier.size(20.dp)) {
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-
-        // Brake rotor circle with center shaft
         drawCircle(
             color = color,
             radius = w * 0.38f,
@@ -85,8 +80,6 @@ fun RetarderIcon(color: Color, modifier: Modifier = Modifier.size(20.dp)) {
             radius = w * 0.14f,
             center = Offset(w * 0.5f, h * 0.5f)
         )
-
-        // Compression hydrodynamic vanes (4 radial curved ticks)
         drawLine(color, Offset(w * 0.5f, h * 0.14f), Offset(w * 0.5f, h * 0.28f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
         drawLine(color, Offset(w * 0.5f, h * 0.72f), Offset(w * 0.5f, h * 0.86f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
         drawLine(color, Offset(w * 0.14f, h * 0.5f), Offset(w * 0.28f, h * 0.5f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
@@ -99,8 +92,6 @@ fun WindshieldWiperIcon(color: Color, modifier: Modifier = Modifier.size(20.dp))
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-
-        // Windshield glass arc (curved trapezoid outline)
         val path = Path().apply {
             moveTo(w * 0.15f, h * 0.82f)
             lineTo(w * 0.26f, h * 0.22f)
@@ -114,8 +105,6 @@ fun WindshieldWiperIcon(color: Color, modifier: Modifier = Modifier.size(20.dp))
             color = color.copy(alpha = 0.45f),
             style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
-
-        // Wiper mechanical arm from lower pivot to upper windshield
         drawLine(
             color = color,
             start = Offset(w * 0.46f, h * 0.80f),
@@ -123,8 +112,6 @@ fun WindshieldWiperIcon(color: Color, modifier: Modifier = Modifier.size(20.dp))
             strokeWidth = 2.2.dp.toPx(),
             cap = StrokeCap.Round
         )
-
-        // Wiper rubber blade sweeping across glass
         drawLine(
             color = color,
             start = Offset(w * 0.58f, h * 0.14f),
@@ -168,8 +155,7 @@ fun TurnArrowIcon(isLeft: Boolean, color: Color, modifier: Modifier = Modifier.s
 @Composable
 fun NeutralGearIcon(color: Color, modifier: Modifier = Modifier.size(16.dp)) {
     Box(
-        modifier = modifier
-            .border(1.5.dp, color, RoundedCornerShape(3.dp)),
+        modifier = modifier.border(1.5.dp, color, RoundedCornerShape(3.dp)),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -189,6 +175,7 @@ fun CockpitButton(
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
+    val hasGestures = def.swipeUpBit != null || def.swipeDownBit != null || def.longPressBit != null
 
     val bgColor = when {
         isPressed -> def.customColor ?: GaugeAccent
@@ -219,16 +206,69 @@ fun CockpitButton(
             .clip(RoundedCornerShape(8.dp))
             .background(bgColor)
             .border(1.5.dp, borderColor, RoundedCornerShape(8.dp))
-            .pointerInput(def.bitIndex) {
+            .pointerInput(def.bitIndex, def.swipeUpBit, def.swipeDownBit, def.longPressBit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    val downId = down.id
+                    val startPos = down.position
+                    val downTime = System.currentTimeMillis()
                     down.consume()
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onPressStateChange(def.bitIndex, true)
 
-                    val up = waitForUpOrCancellation()
-                    up?.consume()
-                    onPressStateChange(def.bitIndex, false)
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                    if (!hasGestures) {
+                        // Standard instant-response button (Horn, Blinkers, Shifter, etc.)
+                        onPressStateChange(def.bitIndex, true)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == downId }
+                            if (change == null || !change.pressed) {
+                                change?.consume()
+                                break
+                            }
+                            change.consume()
+                        }
+                        onPressStateChange(def.bitIndex, false)
+                    } else {
+                        // Smart multi-gesture stalk (Tap vs. Swipe Up vs. Swipe Down vs. Long Press)
+                        var gestureTriggered = false
+                        val swipeThresholdPx = 18.dp.toPx()
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == downId }
+                            if (change == null || !change.pressed) {
+                                change?.consume()
+                                break
+                            }
+                            change.consume()
+
+                            val dy = change.position.y - startPos.y
+                            if (!gestureTriggered) {
+                                if (dy < -swipeThresholdPx && def.swipeUpBit != null) {
+                                    gestureTriggered = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onPressStateChange(def.swipeUpBit, true)
+                                    onPressStateChange(def.swipeUpBit, false)
+                                } else if (dy > swipeThresholdPx && def.swipeDownBit != null) {
+                                    gestureTriggered = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onPressStateChange(def.swipeDownBit, true)
+                                    onPressStateChange(def.swipeDownBit, false)
+                                } else if (System.currentTimeMillis() - downTime > 420L && def.longPressBit != null) {
+                                    gestureTriggered = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onPressStateChange(def.longPressBit, true)
+                                    onPressStateChange(def.longPressBit, false)
+                                }
+                            }
+                        }
+
+                        if (!gestureTriggered) {
+                            onPressStateChange(def.bitIndex, true)
+                            onPressStateChange(def.bitIndex, false)
+                        }
+                    }
                 }
             },
         contentAlignment = Alignment.Center
@@ -274,7 +314,7 @@ fun ButtonColumn(
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         buttons.forEach { btn ->
-            val isPressed = (activeMask and (1 shl btn.bitIndex)) != 0
+            val isPressed = btn.bitIndex >= 0 && (activeMask and (1 shl btn.bitIndex)) != 0
             CockpitButton(
                 def = btn,
                 isPressed = isPressed,
@@ -287,4 +327,3 @@ fun ButtonColumn(
         }
     }
 }
-

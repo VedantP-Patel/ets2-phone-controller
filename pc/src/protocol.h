@@ -10,13 +10,13 @@ constexpr uint8_t RUMBLE_HEADER = 0xFB;
 constexpr size_t TELEMETRY_PACKET_SIZE = 33;
 constexpr uint8_t TELEMETRY_HEADER = 0xFC;
 
-// Decoded controller state from Phone
 struct ControllerState {
     uint16_t sequenceId;
     uint16_t buttons;
     float steering;     // -1.0f (full left) to +1.0f (full right)
     float throttle;     //  0.0f (idle) to 1.0f (full throttle)
     float brake;        //  0.0f (idle) to 1.0f (full brake)
+    float lookX;        // -1.0f (look left) to +1.0f (look right)
     uint8_t flags;
 };
 

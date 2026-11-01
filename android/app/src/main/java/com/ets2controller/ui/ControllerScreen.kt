@@ -18,6 +18,8 @@ import androidx.compose.ui.unit.sp
 import com.ets2controller.config.ControllerSettings
 import com.ets2controller.network.TruckTelemetry
 import com.ets2controller.ui.theme.*
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 
 @Composable
 fun ControllerScreen(
@@ -36,7 +38,8 @@ fun ControllerScreen(
     onButtonStateChange: (Int, Boolean) -> Unit,
     onCalibrateClick: () -> Unit,
     onSaveSettings: (ControllerSettings) -> Unit,
-    onAirHornBlast: () -> Unit = {}
+    onAirHornBlast: () -> Unit = {},
+    onLookXChange: (Float) -> Unit = {}
 ) {
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showAuxSwitchboard by remember { mutableStateOf(false) }
@@ -53,15 +56,35 @@ fun ControllerScreen(
     // Left inner button group (Tactical Driving Spoke)
     val leftInnerButtons = listOf(
         ActionButtonDef(bitIndex = 21, icon = "HIGH_BEAMS", label = "HI BEAMS", customColor = Color(0xFF2979FF)),
-        ActionButtonDef(bitIndex = 7, icon = "RETARDER", label = "RETARDER", customColor = Color(0xFFFF9100)),
+        ActionButtonDef(
+            bitIndex = 7,
+            icon = "RETARDER",
+            label = "RETARDER ↕",
+            customColor = Color(0xFFFF9100),
+            swipeDownBit = 24, // Swipe Down = Increase Retarder Step (;)
+            swipeUpBit = 25    // Swipe Up   = Decrease Retarder Step (')
+        ),
         ActionButtonDef(bitIndex = 2, icon = "💡", label = "LIGHTS"),
         ActionButtonDef(bitIndex = 1, icon = "🔑", label = "ENGINE", isWarning = true)
     )
 
     // Center bottom utilities
     val centerUtilityButtons = listOf(
-        ActionButtonDef(bitIndex = 9, icon = "⏸", label = "CRUISE"),
-        ActionButtonDef(bitIndex = 8, icon = "🗺", label = "MAP / ADV"),
+        ActionButtonDef(
+            bitIndex = 9,
+            icon = "⏸",
+            label = "CRUISE ↕",
+            swipeUpBit = 26,   // Swipe Up   = Cruise Speed +5 km/h
+            swipeDownBit = 27, // Swipe Down = Cruise Speed -5 km/h
+            longPressBit = 28  // Hold       = Cruise Resume
+        ),
+        ActionButtonDef(
+            bitIndex = 8,
+            icon = "🗺",
+            label = "MAP / INFO",
+            swipeUpBit = 29,   // Swipe Up   = Dash Info Display ('I')
+            longPressBit = 30  // Hold       = Enter / Confirm Prompt (Gas/Tolls/Ferries)
+        ),
         ActionButtonDef(bitIndex = 12, icon = "WIPER", label = "WIPERS"),
         ActionButtonDef(bitIndex = 13, icon = "📷", label = "CAM"),
         ActionButtonDef(bitIndex = -2, icon = "🎛️", label = "AUX BOX", isPrimary = true)
@@ -172,12 +195,32 @@ fun ControllerScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // Live Digital Cockpit Telemetry Cluster
+                    // Live Digital Cockpit Telemetry Cluster + Cabin Look Trackpad
+                    var lookOffset by remember { mutableFloatStateOf(0f) }
                     DashboardGauges(
                         telemetry = telemetry,
                         useMph = settings.speedUnitMph,
                         accentColor = activeAccent,
-                        modifier = Modifier.fillMaxWidth(0.96f)
+                        modifier = Modifier
+                            .fillMaxWidth(0.96f)
+                            .pointerInput(Unit) {
+                                detectHorizontalDragGestures(
+                                    onDragEnd = {
+                                        lookOffset = 0f
+                                        onLookXChange(0f)
+                                    },
+                                    onDragCancel = {
+                                        lookOffset = 0f
+                                        onLookXChange(0f)
+                                    },
+                                    onHorizontalDrag = { change, dragAmount ->
+                                        change.consume()
+                                        val maxPx = size.width * 0.35f
+                                        lookOffset = (lookOffset + dragAmount / maxPx).coerceIn(-1f, 1f)
+                                        onLookXChange(lookOffset)
+                                    }
+                                )
+                            }
                     )
 
                     // Steering Wheel Visualizer

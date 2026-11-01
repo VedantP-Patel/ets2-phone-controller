@@ -1,5 +1,6 @@
 #include "protocol.h"
 #include <cstring>
+#include <algorithm>
 
 bool decodeControllerPacket(const uint8_t* data, size_t length, ControllerState* outState) {
     if (!data || !outState || length != CONTROLLER_PACKET_SIZE) {
@@ -20,28 +21,27 @@ bool decodeControllerPacket(const uint8_t* data, size_t length, ControllerState*
     uint16_t buttons = 0;
     int16_t steerRaw = 0;
     uint16_t gasRaw = 0;
-    uint16_t brakeRaw = 0;
 
     std::memcpy(&seq, &data[0], 2);
     std::memcpy(&buttons, &data[2], 2);
     std::memcpy(&steerRaw, &data[4], 2);
     std::memcpy(&gasRaw, &data[6], 2);
-    std::memcpy(&brakeRaw, &data[8], 2);
+
+    // Decode 10-bit brake (bits 0..9) and 6-bit signed lookX (bits 10..15) from bytes 8..9
+    uint16_t rawBrake = static_cast<uint16_t>(data[8]) | (static_cast<uint16_t>(data[9]) << 8);
+    uint16_t brake10 = rawBrake & 0x03FF;
+    int8_t look6 = static_cast<int8_t>((rawBrake >> 10) & 0x3F);
+    if (look6 & 0x20) {
+        look6 |= 0xC0; // Sign-extend 6-bit two's complement (-31..+31)
+    }
 
     outState->sequenceId = seq;
     outState->buttons = buttons;
-    outState->steering = static_cast<float>(steerRaw) / 32767.0f;
-    outState->throttle = static_cast<float>(gasRaw) / 65535.0f;
-    outState->brake = static_cast<float>(brakeRaw) / 65535.0f;
+    outState->steering = std::clamp(static_cast<float>(steerRaw) / 32767.0f, -1.0f, 1.0f);
+    outState->throttle = std::clamp(static_cast<float>(gasRaw) / 65535.0f, 0.0f, 1.0f);
+    outState->brake = std::clamp(static_cast<float>(brake10) / 1023.0f, 0.0f, 1.0f);
+    outState->lookX = std::clamp(static_cast<float>(look6) / 31.0f, -1.0f, 1.0f);
     outState->flags = data[10];
-
-    // Clamp normalized values
-    if (outState->steering < -1.0f) outState->steering = -1.0f;
-    if (outState->steering > 1.0f)  outState->steering = 1.0f;
-    if (outState->throttle < 0.0f)  outState->throttle = 0.0f;
-    if (outState->throttle > 1.0f)  outState->throttle = 1.0f;
-    if (outState->brake < 0.0f)     outState->brake = 0.0f;
-    if (outState->brake > 1.0f)     outState->brake = 1.0f;
 
     return true;
 }

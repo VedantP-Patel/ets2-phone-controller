@@ -27,6 +27,8 @@
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "iphlpapi.lib")
 
+std::atomic<int> g_currentTruckGear{0};
+
 namespace {
     std::atomic<bool> g_running{true};
 
@@ -67,6 +69,7 @@ namespace {
             if (send && reader) {
                 TruckTelemetryPacket telem{};
                 reader->pollTelemetry(stateCopy, &telem);
+                g_currentTruckGear.store(telem.gear);
                 encodeTelemetryPacket(telem, telemBuf);
                 sendto(g_rumbleSocket, reinterpret_cast<char*>(telemBuf), sizeof(telemBuf), 0,
                        reinterpret_cast<sockaddr*>(&targetAddr), sizeof(targetAddr));
@@ -345,8 +348,17 @@ int main() {
             float alpha = std::clamp(0.45f + absDelta * 3.0f, 0.45f, 0.90f);
             s_smoothedSteering += delta * alpha;
         }
-        // Direct kernel-level update: ViGEm virtual Xbox 360 controller
-        gamepad.update(s_smoothedSteering, state.throttle, state.brake, state.buttons, state.flags);
+        // Update virtual Xbox 360 controller with steering, pedals, and right-stick camera look
+        gamepad.update(s_smoothedSteering, state.throttle, state.brake, state.buttons, state.flags, state.lookX);
+
+        // Auto-center interior camera ('1') when releasing finger after looking left/right
+        static bool s_wasLooking = false;
+        bool isLooking = std::abs(state.lookX) > 0.08f;
+        if (s_wasLooking && !isLooking) {
+            injectKeyPulse('1', 0x02, false, 80);
+            std::cout << "[CAMERA] Auto-centered interior view ('1')" << std::endl;
+        }
+        s_wasLooking = isLooking;
 
         // Handle ETS2 Hotkeys via Dual-Dispatch SendInput & DirectInput:
         static uint16_t s_prevButtons = 0;
@@ -370,8 +382,8 @@ int main() {
             }
         }
 
-        // 2. Flags Bit 7: Continuous Roof Air Horn ('N' key, wVk = 'N' 0x4E, scan code 0x31)
-        bool airHornPressed = (state.flags & (1 << 7)) != 0;
+       // 2. Flags Bit 2: Continuous Roof Air Horn ('N' key, scan code 0x31)
+        bool airHornPressed = (state.flags & (1 << 2)) != 0;
         static bool s_airHornActive = false;
         if (airHornPressed != s_airHornActive) {
             setKeyHold('N', 0x31, false, airHornPressed);
@@ -438,7 +450,6 @@ int main() {
         }
 
         // 12. Transmission Triggers: Native 'Shift' / 'Ctrl' / 'N' + Joy RB / LB / Y
-        // Uses native VK_LSHIFT & VK_LCONTROL (Zero camera pitch, guaranteed 100% factory default shifting!)
         if (newBtns & (1 << 10)) {
             injectKeyPulse(VK_LSHIFT, 0x2A, false, 150);
             std::cout << "[TRANSMISSION] Shift Up ('Shift' / Joy RB)" << std::endl;
@@ -447,23 +458,30 @@ int main() {
             injectKeyPulse(VK_LCONTROL, 0x1D, false, 150);
             std::cout << "[TRANSMISSION] Shift Down ('Ctrl' / Joy LB)" << std::endl;
         }
+        // Flags Bit 1: Smart Neutral
         if (newFlags & (1 << 1)) {
-            injectKeyPulse(VK_OEM_2, 0x35, false, 150);
-            std::cout << "[TRANSMISSION] Shift to Neutral ('/' scan 0x35)" << std::endl;
+            int curGear = g_currentTruckGear.load();
+            if (curGear < 0) {
+                injectKeyPulse(VK_LSHIFT, 0x2A, false, 120);
+                std::cout << "[TRANSMISSION] Smart Neutral from Reverse ('Left Shift')" << std::endl;
+            } else if (curGear > 0) {
+                injectKeyPulse(VK_LCONTROL, 0x1D, false, 120);
+                std::cout << "[TRANSMISSION] Smart Neutral from Forward ('Left Ctrl')" << std::endl;
+            } else {
+                std::cout << "[TRANSMISSION] Already in Neutral" << std::endl;
+            }
         }
 
-        // 13. In-Game Radio Hotkeys (Full Windows Virtual Key + Scan Code Dual-Dispatch)
-        // Bit 14: Audio Player Toggle ('R', wVk = 'R' 0x52, scan code 0x13)
+        // 13. In-Game Radio Hotkeys
         if (newBtns & (1 << 14)) {
             injectKeyPulse('R', 0x13, false, 150);
             std::cout << "[RADIO] Audio Player toggled ('R')" << std::endl;
         }
-        // Bit 15: Audio Player Next Favorite (Page Down, wVk = VK_NEXT 0x22, scan code 0x51 extended)
         if (newBtns & (1 << 15)) {
             injectKeyPulse(VK_NEXT, 0x51, true, 150);
             std::cout << "[RADIO] Next Favorite station ('Page Down')" << std::endl;
         }
-        // Flags Bit 0: Audio Player Previous Favorite (Page Up, wVk = VK_PRIOR 0x21, scan code 0x49 extended)
+        // Flags Bit 0: Audio Player Previous Favorite (Page Up)
         if (newFlags & (1 << 0)) {
             injectKeyPulse(VK_PRIOR, 0x49, true, 150);
             std::cout << "[RADIO] Previous Favorite station ('Page Up')" << std::endl;
@@ -481,31 +499,79 @@ int main() {
             std::cout << "[CAMERA] Interior / Camera cycle ('1')" << std::endl;
         }
 
-        // 16. Auxiliary Heavy Truck Switchboard Controls (Flags Bits 2..6):
-        // Flags Bit 2: Differential Lock ('V' -> scan code 0x2F)
-        if (newFlags & (1 << 2)) {
-            injectKeyPulse('V', 0x2F, false, 150);
-            std::cout << "[DIFF LOCK] Differential Lock toggled ('V')" << std::endl;
-        }
-        // Flags Bit 3: Lift / Drop Axle ('U' -> scan code 0x16)
-        if (newFlags & (1 << 3)) {
-            injectKeyPulse('U', 0x16, false, 150);
-            std::cout << "[LIFT AXLE] Lift Axle toggled ('U')" << std::endl;
-        }
-        // Flags Bit 4: Trailer Hook / Decouple ('T' -> scan code 0x14)
-        if (newFlags & (1 << 4)) {
-            injectKeyPulse('T', 0x14, false, 200);
-            std::cout << "[TRAILER] Trailer Hook / Decouple ('T')" << std::endl;
-        }
-        // Flags Bit 5: High Beams ('K' -> scan code 0x25)
-        if (newFlags & (1 << 5)) {
-            injectKeyPulse('K', 0x25, false, 150);
-            std::cout << "[HIGH BEAMS] High Beams toggled ('K')" << std::endl;
-        }
-        // Flags Bit 6: Beacon Strobe Lights ('O' -> scan code 0x18)
-        if (newFlags & (1 << 6)) {
-            injectKeyPulse('O', 0x18, false, 150);
-            std::cout << "[BEACONS] Roof Strobe Beacons ('O')" << std::endl;
+        // 16. Extended Command Switch (Flags bits 3..7)
+        uint8_t extCmdId = (state.flags >> 3) & 0x1F;
+        static uint8_t s_prevExtCmdId = 0;
+        uint8_t newExtCmd = (extCmdId != s_prevExtCmdId) ? extCmdId : 0;
+        s_prevExtCmdId = extCmdId;
+
+        switch (newExtCmd) {
+            case 1: // Bit 18: Diff Lock ('V' scan 0x2F - Factory Default)
+                injectKeyPulse('V', 0x2F, false, 120);
+                std::cout << "[DIFF LOCK] Toggled ('V')" << std::endl;
+                break;
+            case 2: // Bit 19: Lift Axle ('U' scan 0x16 - Factory Default)
+                injectKeyPulse('U', 0x16, false, 120);
+                std::cout << "[LIFT AXLE] Toggled ('U')" << std::endl;
+                break;
+            case 3: // Bit 20: Trailer Hook ('T' scan 0x14 - Factory Default)
+                injectKeyPulse('T', 0x14, false, 180);
+                std::cout << "[TRAILER] Hook / Decouple ('T')" << std::endl;
+                break;
+            case 4: // Bit 21: High Beams ('K' scan 0x25 - Factory Default)
+                injectKeyPulse('K', 0x25, false, 120);
+                std::cout << "[HIGH BEAMS] Toggled ('K')" << std::endl;
+                break;
+            case 5: // Bit 22: Beacons ('O' scan 0x18 - Factory Default)
+                injectKeyPulse('O', 0x18, false, 120);
+                std::cout << "[BEACONS] Roof Strobe ('O')" << std::endl;
+                break;
+            case 7: // Bit 24: Retarder Increase (';' scan 0x27 - Factory Default)
+                injectKeyPulse(VK_OEM_1, 0x27, false, 100);
+                std::cout << "[RETARDER +] Step Up (';')" << std::endl;
+                break;
+            case 8: // Bit 25: Retarder Decrease (''' scan 0x28 - Factory Default)
+                injectKeyPulse(VK_OEM_7, 0x28, false, 100);
+                std::cout << "[RETARDER -] Step Down (''')" << std::endl;
+                break;
+            case 9: // Bit 26: Full World Map ('M' scan 0x32 - Factory Default)
+                injectKeyPulse('M', 0x32, false, 120);
+                std::cout << "[WORLD MAP] Toggle Full Map ('M')" << std::endl;
+                break;
+            case 10: // Bit 27: Route Advisor Next Page ('F6' scan 0x40 - Factory Default)
+                injectKeyPulse(VK_F6, 0x40, false, 120);
+                std::cout << "[ADVISOR] Job Info Page ('F6')" << std::endl;
+                break;
+            case 11: // Bit 28: Route Advisor Damage/Tow ('F7' scan 0x41 - Factory Default)
+                injectKeyPulse(VK_F7, 0x41, false, 120);
+                std::cout << "[ADVISOR] Damage & Tow Service ('F7')" << std::endl;
+                break;
+            case 12: // Bit 29: Dashboard Info Computer ('I' scan 0x17 - Factory Default)
+                injectKeyPulse('I', 0x17, false, 120);
+                std::cout << "[DASH DISPLAY] Cycle Truck Info ('I')" << std::endl;
+                break;
+            case 13: // Bit 30: Enter / Service Confirm (VK_RETURN scan 0x1C - Factory Default)
+                injectKeyPulse(VK_RETURN, 0x1C, false, 150);
+                std::cout << "[ENTER] Activate Gas / Toll / Ferry / Parking Prompt" << std::endl;
+                break;
+            case 14: // Bit 31: Cargo & Job Page ('F6' scan 0x40 - Factory Default)
+                injectKeyPulse(VK_F6, 0x40, false, 120);
+                std::cout << "[JOB INFO] Route Advisor Cargo ('F6')" << std::endl;
+                break;
+            case 15: // Bit 32: Damage & Emergency Tow ('F7' scan 0x41 - Factory Default)
+                injectKeyPulse(VK_F7, 0x41, false, 120);
+                std::cout << "[DAMAGE / TOW] Route Advisor Service ('F7')" << std::endl;
+                break;
+            case 16: // Bit 33: Lean Out Window Reverse Cam ('5' scan 0x06 - Factory Default)
+                injectKeyPulse('5', 0x06, false, 120);
+                std::cout << "[CAMERA] Lean Out Driver Window ('5')" << std::endl;
+                break;
+            case 17: // Bit 34: Exterior Chase Cam ('2' scan 0x03 - Factory Default)
+                injectKeyPulse('2', 0x03, false, 120);
+                std::cout << "[CAMERA] Exterior Chase View ('2')" << std::endl;
+                break;
+            default:
+                break;
         }
 
         // Print stats every 5 seconds

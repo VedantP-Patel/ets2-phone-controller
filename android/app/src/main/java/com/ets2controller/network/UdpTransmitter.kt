@@ -32,37 +32,42 @@ class UdpTransmitter {
     @Volatile var currentSteering: Float = 0.0f
     @Volatile var currentThrottle: Float = 0.0f
     @Volatile var currentBrake: Float = 0.0f
+    @Volatile var currentLookX: Float = 0.0f // -1.0f (Look Left) to +1.0f (Look Right)
     @Volatile var currentFlags: Byte = 0
 
     // Button pulse extension: guarantees every tap is sent in at least 15 UDP packets (150ms)
     // so Wi-Fi packet drops NEVER cause missed button presses
-    private var rawButtons: Int = 0
-    private val buttonHoldUntil = LongArray(32) { 0L }
+    private var rawButtons: Long = 0L
+    private val buttonHoldUntil = LongArray(64) { 0L }
     private val buttonLock = Any()
 
     @Volatile var packetsSentPerSec: Int = 0
         private set
 
     fun setButton(bitIndex: Int, isPressed: Boolean) {
-        if (bitIndex !in 0..31) return
+        if (bitIndex !in 0..62) return
         val now = SystemClock.elapsedRealtime()
         synchronized(buttonLock) {
             if (isPressed) {
-                rawButtons = rawButtons or (1 shl bitIndex)
-                buttonHoldUntil[bitIndex] = now + 150L // Minimum 150ms transmission guarantee
+                rawButtons = rawButtons or (1L shl bitIndex)
+                buttonHoldUntil[bitIndex] = now + 150L
             } else {
-                rawButtons = rawButtons and (1 shl bitIndex).inv()
+                rawButtons = rawButtons and (1L shl bitIndex).inv()
             }
         }
     }
 
     fun getEffectiveButtons(): Int {
+        return getEffectiveButtonsLong().toInt()
+    }
+
+    private fun getEffectiveButtonsLong(): Long {
         val now = SystemClock.elapsedRealtime()
         synchronized(buttonLock) {
             var effective = rawButtons
-            for (i in 0 until 32) {
+            for (i in 0 until 63) {
                 if (now < buttonHoldUntil[i]) {
-                    effective = effective or (1 shl i)
+                    effective = effective or (1L shl i)
                 }
             }
             return effective
@@ -127,26 +132,36 @@ class UdpTransmitter {
         val sock = socket ?: return
         val addr = targetAddress ?: return
 
-        val activeButtons = getEffectiveButtons()
+        val activeButtons = getEffectiveButtonsLong()
 
         val steer = (currentSteering * 32767.0f).toInt().coerceIn(-32768, 32767).toShort()
         val gas = (currentThrottle * 65535.0f).toInt().coerceIn(0, 65535).toShort()
-        val brake = (currentBrake * 65535.0f).toInt().coerceIn(0, 65535).toShort()
-        val btns = (activeButtons and 0xFFFF).toShort()
+        // Pack 10-bit brake (0..1023) in bits 0..9 + 6-bit cabin look X (-31..+31) in bits 10..15
+        val brake10 = (currentBrake.coerceIn(0.0f, 1.0f) * 1023.0f).toInt().coerceIn(0, 1023)
+        val look6 = if (kotlin.math.abs(currentLookX) < 0.05f) {
+            0
+        } else {
+            (currentLookX.coerceIn(-1.0f, 1.0f) * 31.0f).toInt().coerceIn(-31, 31) and 0x3F
+        }
+        val brake = (brake10 or (look6 shl 10)).toShort()
+        val btns = (activeButtons and 0xFFFFL).toShort()
 
-        // Bit 16 in activeButtons maps to flags bit 0 (RADIO PREV)
-        val radioPrev = if ((activeButtons and (1 shl 16)) != 0) (1 shl 0) else 0
-        // Bit 17 in activeButtons maps to flags bit 1 (SHIFT TO NEUTRAL)
-        val shiftNeutral = if ((activeButtons and (1 shl 17)) != 0) (1 shl 1) else 0
-        // Auxiliary Heavy Truck Switchboard: Bits 18..23 map to flags bits 2..7
-        val diffLock = if ((activeButtons and (1 shl 18)) != 0) (1 shl 2) else 0
-        val liftAxle = if ((activeButtons and (1 shl 19)) != 0) (1 shl 3) else 0
-        val trailerHook = if ((activeButtons and (1 shl 20)) != 0) (1 shl 4) else 0
-        val highBeams = if ((activeButtons and (1 shl 21)) != 0) (1 shl 5) else 0
-        val beacons = if ((activeButtons and (1 shl 22)) != 0) (1 shl 6) else 0
-        val airHorn = if ((activeButtons and (1 shl 23)) != 0) (1 shl 7) else 0
+        // Lower 3 bits of flags: direct hold/pulse bits
+        val radioPrev = if ((activeButtons and (1L shl 16)) != 0L) (1 shl 0) else 0
+        val shiftNeutral = if ((activeButtons and (1L shl 17)) != 0L) (1 shl 1) else 0
+        val airHorn = if ((activeButtons and (1L shl 23)) != 0L) (1 shl 2) else 0
 
-        val flags = (currentFlags.toInt() or radioPrev or shiftNeutral or diffLock or liftAxle or trailerHook or highBeams or beacons or airHorn).toByte()
+        // Upper 5 bits of flags (bits 3..7): Encoded Command ID (1..20) for bits 18..34
+        var extCmdId = 0
+        for (bit in 18..34) {
+            if (bit == 23) continue // Air Horn handled in bit 2
+            if ((activeButtons and (1L shl bit)) != 0L) {
+                extCmdId = (bit - 17) // Maps bit 18 -> 1, 19 -> 2, ..., 34 -> 17
+                break
+            }
+        }
+
+        val flags = (currentFlags.toInt() or radioPrev or shiftNeutral or airHorn or (extCmdId shl 3)).toByte()
 
         synchronized(byteBuffer) {
             byteBuffer.clear()

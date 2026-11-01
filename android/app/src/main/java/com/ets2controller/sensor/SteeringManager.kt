@@ -18,46 +18,41 @@ import kotlin.math.sqrt
 class SteeringManager(context: Context) : SensorEventListener {
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-    // Dedicated high-priority sensor background thread (eliminates UI rendering batching jitter)
     private var sensorThread: HandlerThread? = null
     private var sensorHandler: Handler? = null
 
-    // Primary 100Hz Rotation Vector Sensor
-    private val rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
-        ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    // Hardware sensor detection:
+    // Check for a true hardware gyroscope vs. virtual/missing gyro
+    private val gyroSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+    private val hasHardwareGyro: Boolean = gyroSensor != null && !gyroSensor.name.contains("Virtual", ignoreCase = true)
 
-    // Absolute Physical Gravitational Field Anchor Sensor
-    private val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+    // Gravity / Accelerometer provides absolute, zero-drift horizon reference
+    // independent of room yaw (chair rotation) and forward/backward screen pitch!
+    private val gravitySensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
         ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
-    // Android SensorManager.getQuaternionFromVector stores: [w, x, y, z] (scalar-first)
-    private val currentQuat = FloatArray(4) { if (it == 0) 1f else 0f }
-    private val baselineQuat = FloatArray(4) { if (it == 0) 1f else 0f }
-    private val prevQuat = FloatArray(4) { if (it == 0) 1f else 0f }
-    private var hasPrevQuat = false
-    private var hasPrevTwist = false
-    private var prevTwistDeg = 0.0f
-    private var continuousAngle = 0.0f
+    // Fallback rotation vector if needed
+    private val rotationSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
 
-    // Physical gravity vector [gx, gy, gz] in m/s^2 with 2-pole low-pass filtering
-    private val currentGravity = FloatArray(3) { if (it == 1) -9.81f else 0f }
-    private val filteredGravity = FloatArray(3) { if (it == 1) -9.81f else 0f }
-    private val baselineGravity = FloatArray(3) { if (it == 1) -9.81f else 0f }
-    private var hasBaselineGravity = false
+    // Low-pass filtered gravity vector [gx, gy, gz] in device coordinates
+    private val filteredGravity = FloatArray(3) { if (it == 0) 9.81f else 0f }
+    private var hasGravitySample = false
 
+    // Calibrated horizon baseline angle in the screen X-Y plane (degrees)
+    private var baselineRollDeg = 0.0f
     private var isCalibrated = false
 
-    // Responsive 1-Euro Filter:
-    // mincutoff = 1.8f (eliminates micro-tremors while keeping <15ms center response)
-    // beta = 0.04f (instant tracking on counter-steer and tight turns)
+    // Continuous unwrapped steering angle (supports multi-turn ±450°..±900°)
+    private var fusedAngleDeg = 0.0f
+    private var prevGravRollDeg = 0.0f
+    private var continuousGravDeg = 0.0f
+    private var hasPrevGravRoll = false
+
+    // Timestamps for exact hardware integration
+    private var lastGyroTimestampNs = 0L
+
+    // Responsive 1-Euro Filter (eliminates hand tremor while keeping <12ms latency)
     private val filter = OneEuroFilter(100f, 1.8f, 0.04f, 2.5f)
-
-    // Continuous Asymptotic Gravity Drift Offset (ZERO step jumps, ZERO bang-bang limit-cycle chatter)
-    private var driftOffset = 0.0f
-
-    // Monotonic hardware nanosecond timebase & instantaneous angular velocity
-    private var lastAngle = 0.0f
-    private var lastEventTimestampNs = 0L
 
     @Volatile
     var normalizedSteering: Float = 0.0f
@@ -76,8 +71,6 @@ class SteeringManager(context: Context) : SensorEventListener {
     @Volatile
     var isRightBlinkerActive: Boolean = false
 
-    // Acoustic / Vibration Feedback Decoupling Gate
-    // When true, gravity drift integration is frozen to prevent motor vibration from polluting steering
     @Volatile
     var isHapticVibrating: Boolean = false
 
@@ -91,7 +84,6 @@ class SteeringManager(context: Context) : SensorEventListener {
     var settings: ControllerSettings = ControllerSettings()
         set(value) {
             field = value
-            // Enforce responsive minimum floor even if old sluggish defaults are saved in SharedPreferences
             filter.updateParameters(
                 value.filterMinCutoff.coerceAtLeast(1.8f),
                 value.filterBeta.coerceAtLeast(0.04f)
@@ -105,11 +97,15 @@ class SteeringManager(context: Context) : SensorEventListener {
             val handler = Handler(thread.looper)
             sensorHandler = handler
 
-            rotationSensor?.let {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler)
-            }
             gravitySensor?.let {
                 sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler)
+            }
+            if (hasHardwareGyro && gyroSensor != null) {
+                sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+            } else {
+                rotationSensor?.let {
+                    sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                }
             }
         }
     }
@@ -123,173 +119,149 @@ class SteeringManager(context: Context) : SensorEventListener {
     }
 
     fun calibrateCenter() {
-        System.arraycopy(currentQuat, 0, baselineQuat, 0, 4)
-        System.arraycopy(currentQuat, 0, prevQuat, 0, 4)
-        hasPrevQuat = true
-        hasPrevTwist = false
-        prevTwistDeg = 0.0f
-        continuousAngle = 0.0f
-        System.arraycopy(filteredGravity, 0, baselineGravity, 0, 3)
-        hasBaselineGravity = true
-        isCalibrated = true
-        driftOffset = 0.0f
+        if (hasGravitySample) {
+            baselineRollDeg = computeScreenRollFromGravity(filteredGravity[0], filteredGravity[1])
+        }
+        fusedAngleDeg = 0.0f
+        continuousGravDeg = 0.0f
+        prevGravRollDeg = 0.0f
+        hasPrevGravRoll = false
         rawAngleDeg = 0.0f
         normalizedSteering = 0.0f
-        lastAngle = 0.0f
-        lastEventTimestampNs = 0L
+        lastGyroTimestampNs = 0L
         leftBlinkerArmed = false
         rightBlinkerArmed = false
         lastHapticNotch = 0
+        isCalibrated = true
         filter.reset()
+    }
+
+    /**
+     * Computes pure steering roll angle in the phone's X-Y screen plane [-180, +180].
+     * Turning the phone clockwise (steering right) increases +gy relative to +gx.
+     * Completely immune to chair rotation (yaw) and forward/backward screen tilt (pitch gz)!
+     */
+    private fun computeScreenRollFromGravity(gx: Float, gy: Float): Float {
+        return Math.toDegrees(atan2(gy.toDouble(), gx.toDouble())).toFloat()
+    }
+
+    private fun wrapAngle180(angle: Float): Float {
+        var a = angle
+        while (a > 180.0f) a -= 360.0f
+        while (a < -180.0f) a += 360.0f
+        return a
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
 
-        // 1. Handle Gravitational Field Ground Truth with Heavy Low-Pass Pre-Filter (fc ≈ 1.2 Hz)
+        // 1. Update absolute Earth Gravity Vector (Screen-Plane Horizon Reference)
         if (event.sensor.type == Sensor.TYPE_GRAVITY || event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-            currentGravity[0] = event.values[0]
-            currentGravity[1] = event.values[1]
-            currentGravity[2] = event.values[2]
+            val rawGx = event.values[0]
+            val rawGy = event.values[1]
+            val rawGz = event.values[2]
 
-            // 2-pole low-pass filter (alpha = 0.06f at 100Hz ≈ 1.0 Hz cutoff)
-            // Strips 100% of motor vibration (>150Hz) and human hand tremor (8-12Hz)
-            val alpha = 0.06f
-            filteredGravity[0] += alpha * (event.values[0] - filteredGravity[0])
-            filteredGravity[1] += alpha * (event.values[1] - filteredGravity[1])
-            filteredGravity[2] += alpha * (event.values[2] - filteredGravity[2])
+            if (!hasGravitySample) {
+                filteredGravity[0] = rawGx
+                filteredGravity[1] = rawGy
+                filteredGravity[2] = rawGz
+                hasGravitySample = true
+                if (!isCalibrated) {
+                    calibrateCenter()
+                }
+            } else {
+                // If vibrating from haptic feedback, use a tighter low-pass filter to reject motor buzz
+                val alpha = if (isHapticVibrating) 0.03f else 0.18f
+                filteredGravity[0] += alpha * (rawGx - filteredGravity[0])
+                filteredGravity[1] += alpha * (rawGy - filteredGravity[1])
+                filteredGravity[2] += alpha * (rawGz - filteredGravity[2])
+            }
 
-            if (!hasBaselineGravity) {
-                System.arraycopy(filteredGravity, 0, baselineGravity, 0, 3)
-                hasBaselineGravity = true
+            val gx = filteredGravity[0]
+            val gy = filteredGravity[1]
+            val screenPlaneMag = sqrt(gx * gx + gy * gy)
+
+            // Only update gravity roll when phone is held upright enough (not lying completely flat on a table)
+            if (screenPlaneMag > 1.8f) {
+                val currentRoll = computeScreenRollFromGravity(gx, gy)
+                val relRoll = wrapAngle180(currentRoll - baselineRollDeg)
+
+                if (!hasPrevGravRoll) {
+                    prevGravRollDeg = relRoll
+                    continuousGravDeg = relRoll
+                    hasPrevGravRoll = true
+                } else {
+                    val deltaGrav = wrapAngle180(relRoll - prevGravRollDeg)
+                    continuousGravDeg += deltaGrav
+                    prevGravRollDeg = relRoll
+                }
+            }
+
+            // If this phone has NO physical gyro (or uses a Virtual Gyro), drive steering directly from gravity
+            if (!hasHardwareGyro) {
+                processFinalSteeringAngle(continuousGravDeg, event.timestamp)
             }
             return
         }
 
-        if (event.sensor.type != Sensor.TYPE_GAME_ROTATION_VECTOR &&
-            event.sensor.type != Sensor.TYPE_ROTATION_VECTOR
-        ) return
-
-        // SensorManager.getQuaternionFromVector outputs [w, x, y, z] (w at index 0)
-        SensorManager.getQuaternionFromVector(currentQuat, event.values)
-
-        if (!isCalibrated) {
-            calibrateCenter()
-            return
-        }
-
-        var cw = currentQuat[0]
-        var cx = currentQuat[1]
-        var cy = currentQuat[2]
-        var cz = currentQuat[3]
-
-        // 1. Inter-Frame Geodesic Shortest-Path Continuity on S^3
-        if (hasPrevQuat) {
-            val dotPrev = prevQuat[0] * cw + prevQuat[1] * cx + prevQuat[2] * cy + prevQuat[3] * cz
-            if (dotPrev < 0f) {
-                cw = -cw
-                cx = -cx
-                cy = -cy
-                cz = -cz
+        // 2. High-Speed Hardware Gyroscope Integration + Continuous Gravity Drift Anchor
+        if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
+            if (!isCalibrated && hasGravitySample) {
+                calibrateCenter()
             }
+
+            val nowNs = event.timestamp
+            val dt = if (lastGyroTimestampNs > 0L) {
+                ((nowNs - lastGyroTimestampNs) / 1_000_000_000.0f).coerceIn(0.001f, 0.05f)
+            } else {
+                0.005f
+            }
+            lastGyroTimestampNs = nowNs
+
+            // event.values[2] is angular velocity around the +Z screen normal axis (rad/s).
+            // Counter-clockwise is positive +Z, so clockwise (steering right) is -values[2].
+            val omegaZDegPerSec = -Math.toDegrees(event.values[2].toDouble()).toFloat()
+
+            // Integrate pure screen-normal rotation
+            fusedAngleDeg += omegaZDegPerSec * dt
+
+            // Complementary Filter Drift Correction:
+            // Continuously pulls any gyro bias/posture shift back toward the true gravity horizon!
+            val gx = filteredGravity[0]
+            val gy = filteredGravity[1]
+            val screenPlaneMag = sqrt(gx * gx + gy * gy)
+
+            if (settings.gravityAnchorEnabled && hasPrevGravRoll && screenPlaneMag > 2.2f) {
+                // Find the gravity angle in the same multi-turn revolution as fusedAngleDeg
+                val gravError = wrapAngle180(continuousGravDeg - fusedAngleDeg)
+
+                // Strongest drift correction inside the normal driving range (|angle| < 120°),
+                // smoothly tapering during rapid turns so gyro stays 100% crisp.
+                val speedGate = (1.0f - (abs(omegaZDegPerSec) / 180.0f)).coerceIn(0.15f, 1.0f)
+                val correctionRate = if (abs(fusedAngleDeg) < 120.0f) 2.5f else 0.6f
+                val alphaComplement = (correctionRate * speedGate * dt).coerceIn(0.0f, 0.08f)
+
+                fusedAngleDeg += gravError * alphaComplement
+            }
+
+            processFinalSteeringAngle(fusedAngleDeg, nowNs)
         }
-        prevQuat[0] = cw
-        prevQuat[1] = cx
-        prevQuat[2] = cy
-        prevQuat[3] = cz
-        hasPrevQuat = true
+    }
 
-        // 2. Relative rotation in device coordinate frame: q_rel = q_baseline^-1 * q_current
-        val bw = baselineQuat[0]
-        val bx = baselineQuat[1]
-        val by = baselineQuat[2]
-        val bz = baselineQuat[3]
-
-        val rw = bw * cw + bx * cx + by * cy + bz * cz
-        val rz = bw * cz - bx * cy + by * cx - bz * cw
-
-        // Swing-Twist normalization: isolates pure Z-axis steering rotation
-        // independent of forward/backward screen pitch changes
-        val twistNorm = sqrt(rw * rw + rz * rz)
-        val twistRad = if (twistNorm > 1e-6f) {
-            2.0 * atan2((rz / twistNorm).toDouble(), (rw / twistNorm).toDouble())
-        } else {
-            0.0
-        }
-        var rawTwistDeg = -Math.toDegrees(twistRad).toFloat()
-        while (rawTwistDeg > 180.0f) rawTwistDeg -= 360.0f
-        while (rawTwistDeg < -180.0f) rawTwistDeg += 360.0f
-
-        // 3. Multi-Turn Phase Unwrapping Accumulator
-        if (!hasPrevTwist) {
-            continuousAngle = rawTwistDeg
-            prevTwistDeg = rawTwistDeg
-            hasPrevTwist = true
-        } else {
-            var delta = rawTwistDeg - prevTwistDeg
-            while (delta > 180.0f) delta -= 360.0f
-            while (delta < -180.0f) delta += 360.0f
-            continuousAngle += delta
-            prevTwistDeg = rawTwistDeg
-        }
-
-        // Half-lock limit for full steering range (e.g. 450° in 900° mode)
+    private fun processFinalSteeringAngle(unfilteredAngleDeg: Float, timestampNs: Long) {
         val halfLockDeg = if (settings.wheelMode1to1) {
             (settings.wheelDegreesRange / 2.0f).coerceAtLeast(30.0f)
         } else {
             settings.steeringMaxAngleDeg.coerceAtLeast(10.0f)
         }
 
-        // Soft-clamp continuous angle to physical lock limit (+30° headroom)
-        val maxTurnLimit = (halfLockDeg + 30.0f).coerceAtLeast(180.0f)
-        continuousAngle = continuousAngle.coerceIn(-maxTurnLimit, maxTurnLimit)
+        // Clamp continuous angle so over-rotating past full lock doesn't wind up
+        val maxTurnLimit = (halfLockDeg + 25.0f).coerceAtLeast(180.0f)
+        fusedAngleDeg = fusedAngleDeg.coerceIn(-maxTurnLimit, maxTurnLimit)
+        continuousGravDeg = continuousGravDeg.coerceIn(-maxTurnLimit, maxTurnLimit)
 
-        val currentFrameAngle = continuousAngle
-
-        // Instantaneous angular velocity from monotonic hardware IMU timestamp
-        val nowNs = event.timestamp
-        val dt = if (lastEventTimestampNs > 0L) {
-            ((nowNs - lastEventTimestampNs) / 1_000_000_000.0f).coerceIn(0.002f, 0.05f)
-        } else {
-            0.01f
-        }
-        lastEventTimestampNs = nowNs
-        val angularSpeed = if (dt > 0.0001f) abs(currentFrameAngle - lastAngle) / dt else 0.0f
-        lastAngle = currentFrameAngle
-
-        // Continuous Asymptotic Gravity Drift Estimator:
-        val gx = filteredGravity[0]
-        val gy = filteredGravity[1]
-        val gz = filteredGravity[2]
-        val inPitchMag = sqrt(gx * gx + gz * gz)
-
-        if (settings.gravityAnchorEnabled && hasBaselineGravity && inPitchMag > 0.5f) {
-            val rawGrav = Math.toDegrees(atan2(-gy.toDouble(), inPitchMag.toDouble())).toFloat()
-            val baseInPitch = sqrt(baselineGravity[0] * baselineGravity[0] + baselineGravity[2] * baselineGravity[2])
-            val baseGrav = if (baseInPitch > 0.5f) {
-                Math.toDegrees(atan2(-baselineGravity[1].toDouble(), baseInPitch.toDouble())).toFloat()
-            } else 0.0f
-            var gravAngleDeg = rawGrav - baseGrav
-            while (gravAngleDeg > 180.0f) gravAngleDeg -= 360.0f
-            while (gravAngleDeg < -180.0f) gravAngleDeg += 360.0f
-
-            if (abs(continuousAngle) < 15.0f && angularSpeed < 1.0f && !isHapticVibrating) {
-                val currentFused = currentFrameAngle + driftOffset
-                var driftError = gravAngleDeg - currentFused
-                while (driftError > 180.0f) driftError -= 360.0f
-                while (driftError < -180.0f) driftError += 360.0f
-
-                val maxDelta = (0.3f * dt).coerceAtMost(0.005f)
-                driftOffset += driftError.coerceIn(-maxDelta, maxDelta)
-            }
-        }
-
-        // Fused angle: perfectly smooth continuous frame angle with gentle drift anchoring
-        val targetAngle = currentFrameAngle + driftOffset
-
-        // Apply Aerospace 1-Euro adaptive smoothing filter
-        val timestampSec = event.timestamp / 1_000_000_000.0
-        val smoothedAngle = filter.filter(targetAngle, timestampSec)
+        val timestampSec = timestampNs / 1_000_000_000.0
+        val smoothedAngle = filter.filter(unfilteredAngleDeg.coerceIn(-maxTurnLimit, maxTurnLimit), timestampSec)
 
         val totalAngle = if (settings.invertSteering) -smoothedAngle else smoothedAngle
         rawAngleDeg = totalAngle
@@ -298,15 +270,13 @@ class SteeringManager(context: Context) : SensorEventListener {
         val absAngle = abs(totalAngle)
         val speedFactor = (currentSpeedKmh / 90.0f).coerceIn(0.0f, 1.0f)
 
-        // C² Continuous Quintic Smoothstep Deadband & Dynamic Steering Curve
         var steerVal = 0.0f
         if (absAngle <= deadzone) {
             steerVal = 0.0f
         } else {
-            val blendWindow = 1.0f // 1.0 degree smooth transition window
+            val blendWindow = 1.0f
             val linearEffective = ((absAngle - deadzone) / (halfLockDeg - deadzone).coerceAtLeast(1.0f)).coerceIn(0.0f, 1.0f)
 
-            // C² continuous quintic smoothstep: S(u) = 6u^5 - 15u^4 + 10u^3
             val effective = if (absAngle < deadzone + blendWindow) {
                 val u = ((absAngle - deadzone) / blendWindow).coerceIn(0.0f, 1.0f)
                 val smooth = u * u * u * (u * (u * 6.0f - 15.0f) + 10.0f)
@@ -315,7 +285,6 @@ class SteeringManager(context: Context) : SensorEventListener {
                 linearEffective
             }
 
-            // Smooth progressive curve across the ENTIRE 0..100% range (ZERO 60-degree step jump!)
             val casterCurveBoost = settings.casterSpringStrength.coerceIn(0.0f, 1.0f) * 0.35f
             val dynamicCurve = if (settings.wheelMode1to1) {
                 1.0f + (0.20f * speedFactor) + (casterCurveBoost * 0.5f)
@@ -328,7 +297,7 @@ class SteeringManager(context: Context) : SensorEventListener {
 
         normalizedSteering = steerVal.coerceIn(-1.0f, 1.0f)
 
-        // Continuous Virtual Steering Resistance Micro-Haptics (every 15° away from center)
+        // Micro-haptic notches every 15 degrees
         if (settings.steeringHapticTension) {
             val currentNotch = (absAngle / 15.0f).toInt()
             if (currentNotch != lastHapticNotch) {
@@ -339,7 +308,7 @@ class SteeringManager(context: Context) : SensorEventListener {
             }
         }
 
-        // Auto-Cancelling Turn Indicators (ACTI):
+        // Auto-Cancelling Turn Indicators (ACTI)
         if (settings.autoCancelBlinkers) {
             if (isLeftBlinkerActive) {
                 if (totalAngle < -20.0f) {

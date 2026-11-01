@@ -13,7 +13,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -34,7 +33,8 @@ data class AuxSwitchDef(
     val title: String,
     val subtitle: String,
     val activeColor: Color,
-    val iconType: String
+    val iconType: String,
+    val isMomentary: Boolean = false
 )
 
 @Composable
@@ -48,57 +48,27 @@ fun AuxSwitchboard(
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
+    var selectedTab by remember { mutableIntStateOf(0) }
 
-    val switches = listOf(
-        AuxSwitchDef(
-            bitIndex = 18,
-            keyHint = "V",
-            title = "DIFF LOCK",
-            subtitle = "Cross-Axle Lock",
-            activeColor = Color(0xFFFF9100),
-            iconType = "DIFF"
-        ),
-        AuxSwitchDef(
-            bitIndex = 19,
-            keyHint = "U",
-            title = "LIFT AXLE",
-            subtitle = "Chassis Elevation",
-            activeColor = Color(0xFF00E5FF),
-            iconType = "LIFT"
-        ),
-        AuxSwitchDef(
-            bitIndex = 20,
-            keyHint = "T",
-            title = "TRAILER HOOK",
-            subtitle = "5th Wheel Coupler",
-            activeColor = Color(0xFFFF5252),
-            iconType = "TRAILER"
-        ),
-        AuxSwitchDef(
-            bitIndex = 3,
-            keyHint = "F",
-            title = "HAZARDS",
-            subtitle = "4-Way Emergency",
-            activeColor = Color(0xFFFF3D00),
-            iconType = "HAZARD"
-        ),
-        AuxSwitchDef(
-            bitIndex = 22,
-            keyHint = "O",
-            title = "BEACONS",
-            subtitle = "Strobe Hazards",
-            activeColor = Color(0xFFFFD600),
-            iconType = "BEACON"
-        ),
-        AuxSwitchDef(
-            bitIndex = 23,
-            keyHint = "N",
-            title = "AIR HORN",
-            subtitle = "Dual Roof Trumpet",
-            activeColor = Color(0xFFFFAB00),
-            iconType = "AIR_HORN"
-        )
+    val page1Switches = listOf(
+        AuxSwitchDef(18, "V", "DIFF LOCK", "Cross-Axle Lock", Color(0xFFFF9100), "DIFF"),
+        AuxSwitchDef(19, "U", "LIFT AXLE", "Chassis Elevation", Color(0xFF00E5FF), "LIFT"),
+        AuxSwitchDef(20, "T", "TRAILER HOOK", "5th Wheel Coupler", Color(0xFFFF5252), "TRAILER"),
+        AuxSwitchDef(3, "F", "HAZARDS", "4-Way Emergency", Color(0xFFFF3D00), "HAZARD"),
+        AuxSwitchDef(22, "O", "BEACONS", "Strobe Hazards", Color(0xFFFFD600), "BEACON"),
+        AuxSwitchDef(23, "N", "AIR HORN", "Dual Roof Trumpet", Color(0xFFFFAB00), "AIR_HORN", isMomentary = true)
     )
+
+    val page2Switches = listOf(
+        AuxSwitchDef(30, "ENTER", "CONFIRM / PAY", "Fuel / Ferry / Toll", Color(0xFF00E676), "ENTER", isMomentary = true),
+        AuxSwitchDef(29, "I", "DASH DISPLAY", "Trip Info Computer", Color(0xFF2979FF), "INFO", isMomentary = true),
+        AuxSwitchDef(31, "F6", "JOB & CARGO", "Delivery Details", Color(0xFF00E5FF), "INFO", isMomentary = true),
+        AuxSwitchDef(32, "F7", "DAMAGE & TOW", "Service / Assistance", Color(0xFFFF9100), "HAZARD", isMomentary = true),
+        AuxSwitchDef(33, "CAM 5", "REVERSE PEEK", "Lean Out Window", Color(0xFFAB47BC), "LIFT", isMomentary = true),
+        AuxSwitchDef(34, "CAM 2", "EXTERIOR CAM", "3rd Person Orbit", Color(0xFF26A69A), "BEACON", isMomentary = true)
+    )
+
+    val currentSwitches = if (selectedTab == 0) page1Switches else page2Switches
 
     // Real telemetry flags from SCS SDK telemetry
     val isDiffLocked = (telemetryAuxFlags and (1 shl 0)) != 0
@@ -107,9 +77,11 @@ fun AuxSwitchboard(
     val isHighBeamOn = (telemetryAuxFlags and (1 shl 3)) != 0
     val isBeaconOn = (telemetryAuxFlags and (1 shl 4)) != 0
 
-    fun isSwitchEngaged(bitIndex: Int): Boolean {
-        val isPhysicallyPressed = (activeMask and (1 shl bitIndex)) != 0
-        val isTelemetryActive = when (bitIndex) {
+    fun isSwitchEngaged(sw: AuxSwitchDef): Boolean {
+        val isPhysicallyPressed = sw.bitIndex < 32 && (activeMask and (1 shl sw.bitIndex)) != 0
+        if (sw.isMomentary) return isPhysicallyPressed
+
+        val isTelemetryActive = when (sw.bitIndex) {
             18 -> isDiffLocked
             19 -> isLiftActive
             20 -> isTrailerConnected
@@ -130,32 +102,54 @@ fun AuxSwitchboard(
             .padding(10.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Header Bar
+            // Header Bar with Tab Selector
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🎛️", fontSize = 16.sp)
-                    Spacer(modifier = Modifier.width(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("🎛️", fontSize = 15.sp)
                     Text(
-                        "AUXILIARY HEAVY TRUCK SWITCHBOARD",
+                        "MULTIPLEX SWITCHBOARD",
                         color = Color.White,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Black,
-                        letterSpacing = 1.sp
+                        letterSpacing = 0.8.sp
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // Tab 0: Traction & Lights
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(GaugeAccent.copy(alpha = 0.2f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (selectedTab == 0) GaugeAccent else CockpitPanel)
+                            .border(1.dp, if (selectedTab == 0) GaugeAccent else CockpitBorder, RoundedCornerShape(6.dp))
+                            .clickable { selectedTab = 0 }
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Text(
-                            "DIRECTINPUT 100HZ",
-                            color = GaugeAccent,
+                            "1. TRACTION & LIGHTS",
+                            color = if (selectedTab == 0) Color.Black else Color.LightGray,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // Tab 1: Suspension, Windows & Service Prompts
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (selectedTab == 1) GaugeAccent else CockpitPanel)
+                            .border(1.dp, if (selectedTab == 1) GaugeAccent else CockpitBorder, RoundedCornerShape(6.dp))
+                            .clickable { selectedTab = 1 }
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            "2. SUSPENSION & CABIN",
+                            color = if (selectedTab == 1) Color.Black else Color.LightGray,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -178,25 +172,23 @@ fun AuxSwitchboard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // 6-Switch Grid: 2 rows of 3 heavy rocker cards
+            // Row 1 (3 switches)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                switches.take(3).forEach { sw ->
-                    val isEngaged = isSwitchEngaged(sw.bitIndex)
+                currentSwitches.take(3).forEach { sw ->
+                    val isEngaged = isSwitchEngaged(sw)
 
                     RockerSwitchCard(
                         def = sw,
                         isEngaged = isEngaged,
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            // Pulse key press
                             onPressChange(sw.bitIndex, true)
                             onPressChange(sw.bitIndex, false)
 
                             if (sw.bitIndex == 23) {
-                                // Air Horn sound effect
                                 onAirHornBlast()
                             }
                         },
@@ -207,12 +199,13 @@ fun AuxSwitchboard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // Row 2 (3 switches)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                switches.drop(3).forEach { sw ->
-                    val isEngaged = isSwitchEngaged(sw.bitIndex)
+                currentSwitches.drop(3).forEach { sw ->
+                    val isEngaged = isSwitchEngaged(sw)
 
                     RockerSwitchCard(
                         def = sw,
@@ -258,30 +251,25 @@ private fun RockerSwitchCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Icon & Labels
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.weight(1f)
             ) {
-                // Vector Graphic Icon
                 AuxSwitchIcon(
                     type = def.iconType,
                     color = if (isEngaged) def.activeColor else Color.Gray,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(26.dp)
                 )
-
                 Spacer(modifier = Modifier.width(8.dp))
-
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = def.title,
                             color = if (isEngaged) Color.White else Color.LightGray,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Black
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        // Keyboard shortcut badge
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(3.dp))
@@ -292,7 +280,7 @@ private fun RockerSwitchCard(
                             Text(
                                 text = def.keyHint,
                                 color = def.activeColor,
-                                fontSize = 9.sp,
+                                fontSize = 8.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -305,7 +293,6 @@ private fun RockerSwitchCard(
                 }
             }
 
-            // Heavy Rocker LED Indicator Light
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
@@ -319,7 +306,7 @@ private fun RockerSwitchCard(
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Text(
-                    text = if (isEngaged) "ON" else "OFF",
+                    text = if (def.isMomentary) "PUSH" else if (isEngaged) "ON" else "OFF",
                     color = if (isEngaged) def.activeColor else Color.Gray,
                     fontSize = 8.sp,
                     fontWeight = FontWeight.Bold
@@ -334,17 +321,14 @@ private fun AuxSwitchIcon(type: String, color: Color, modifier: Modifier = Modif
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-
         when (type) {
             "DIFF" -> {
-                // Differential Lock: Axle line with center cross-gear locked
                 drawLine(color, Offset(0f, h * 0.5f), Offset(w, h * 0.5f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                 drawCircle(color, radius = w * 0.28f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = 1.8.dp.toPx()))
                 drawLine(color, Offset(w * 0.35f, h * 0.35f), Offset(w * 0.65f, h * 0.65f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                 drawLine(color, Offset(w * 0.65f, h * 0.35f), Offset(w * 0.35f, h * 0.65f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
             }
             "LIFT" -> {
-                // Lift Axle: Wheel circle with elevation arrow above
                 drawCircle(color, radius = w * 0.24f, center = Offset(w * 0.5f, h * 0.65f), style = Stroke(width = 2.dp.toPx()))
                 val arrow = Path().apply {
                     moveTo(w * 0.5f, h * 0.10f)
@@ -359,7 +343,6 @@ private fun AuxSwitchIcon(type: String, color: Color, modifier: Modifier = Modif
                 drawPath(arrow, color = color)
             }
             "TRAILER" -> {
-                // Trailer Kingpin: Semi 5th-wheel horseshoe hitch with locking pin
                 val hitch = Path().apply {
                     moveTo(w * 0.20f, h * 0.85f)
                     lineTo(w * 0.20f, h * 0.35f)
@@ -367,24 +350,9 @@ private fun AuxSwitchIcon(type: String, color: Color, modifier: Modifier = Modif
                     lineTo(w * 0.80f, h * 0.85f)
                 }
                 drawPath(hitch, color = color, style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                // Kingpin ball
                 drawCircle(color, radius = w * 0.14f, center = Offset(w * 0.50f, h * 0.50f))
             }
-            "HIGH_BEAM" -> {
-                // High Beams: Classic automotive high beam light dome with 5 straight parallel horizontal rays
-                val bulb = Path().apply {
-                    moveTo(w * 0.60f, h * 0.25f)
-                    quadraticBezierTo(w * 0.90f, h * 0.50f, w * 0.60f, h * 0.75f)
-                    close()
-                }
-                drawPath(bulb, color = color, style = Stroke(width = 2.dp.toPx()))
-                for (i in 0 until 5) {
-                    val y = h * (0.28f + i * 0.11f)
-                    drawLine(color, Offset(w * 0.10f, y), Offset(w * 0.52f, y), strokeWidth = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                }
-            }
             "HAZARD" -> {
-                // Emergency Hazard Warning Triangle
                 val outerTri = Path().apply {
                     moveTo(w * 0.50f, h * 0.16f)
                     lineTo(w * 0.88f, h * 0.82f)
@@ -392,12 +360,10 @@ private fun AuxSwitchIcon(type: String, color: Color, modifier: Modifier = Modif
                     close()
                 }
                 drawPath(outerTri, color = color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                // Exclamation mark bar & dot
                 drawLine(color, Offset(w * 0.50f, h * 0.38f), Offset(w * 0.50f, h * 0.58f), strokeWidth = 2.2.dp.toPx(), cap = StrokeCap.Round)
                 drawCircle(color, radius = 1.4.dp.toPx(), center = Offset(w * 0.50f, h * 0.70f))
             }
             "BEACON" -> {
-                // Roof Beacon: Rotating strobe dome with hazard radiation flares
                 val dome = Path().apply {
                     moveTo(w * 0.25f, h * 0.75f)
                     lineTo(w * 0.25f, h * 0.50f)
@@ -406,34 +372,14 @@ private fun AuxSwitchIcon(type: String, color: Color, modifier: Modifier = Modif
                     close()
                 }
                 drawPath(dome, color = color, style = Stroke(width = 2.dp.toPx()))
-                // Strobe rays
                 drawLine(color, Offset(w * 0.50f, h * 0.12f), Offset(w * 0.50f, h * 0.02f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                 drawLine(color, Offset(w * 0.20f, h * 0.26f), Offset(w * 0.10f, h * 0.16f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                 drawLine(color, Offset(w * 0.80f, h * 0.26f), Offset(w * 0.90f, h * 0.16f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
             }
-            "AIR_HORN" -> {
-                // Dual Air Horn Trumpets
-                val horn1 = Path().apply {
-                    moveTo(w * 0.15f, h * 0.40f)
-                    lineTo(w * 0.65f, h * 0.32f)
-                    lineTo(w * 0.88f, h * 0.18f)
-                    lineTo(w * 0.88f, h * 0.52f)
-                    lineTo(w * 0.65f, h * 0.42f)
-                    close()
-                }
-                drawPath(horn1, color = color, style = Stroke(width = 1.8.dp.toPx(), join = StrokeJoin.Round))
-                // Lower secondary trumpet
-                val horn2 = Path().apply {
-                    moveTo(w * 0.20f, h * 0.68f)
-                    lineTo(w * 0.60f, h * 0.62f)
-                    lineTo(w * 0.82f, h * 0.52f)
-                    lineTo(w * 0.82f, h * 0.80f)
-                    lineTo(w * 0.60f, h * 0.72f)
-                    close()
-                }
-                drawPath(horn2, color = color.copy(alpha = 0.8f), style = Stroke(width = 1.6.dp.toPx(), join = StrokeJoin.Round))
+            "AIR_HORN", "ENTER", "INFO" -> {
+                drawCircle(color, radius = w * 0.36f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = 2.dp.toPx()))
+                drawCircle(color, radius = w * 0.14f, center = Offset(w * 0.5f, h * 0.5f))
             }
         }
     }
 }
-

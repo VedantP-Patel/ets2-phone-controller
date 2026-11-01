@@ -114,17 +114,16 @@ void VirtualGamepad::handleNotification(UCHAR largeMotor, UCHAR smallMotor) {
     }
 }
 
-void VirtualGamepad::update(float steering, float throttle, float brake, uint16_t buttons, uint8_t flags) {
+void VirtualGamepad::update(float steering, float throttle, float brake, uint16_t buttons, uint8_t flags, float lookX) {
     if (!initialized_ || !target_ || !client_) return;
 
-    // Map steering (-1.0 to +1.0) -> Left Thumbstick X (-32768 to 32767)
     int steerInt = static_cast<int>(steering * 32767.0f);
-    steerInt = std::clamp(steerInt, -32768, 32767);
-    report_.sThumbLX = static_cast<SHORT>(steerInt);
+    report_.sThumbLX = static_cast<SHORT>(std::clamp(steerInt, -32768, 32767));
     report_.sThumbLY = 0;
 
-    // Right thumbstick permanently centered
-    report_.sThumbRX = 0;
+    // Right thumbstick X: Smooth Cabin Camera Panning (Look Left / Look Right at intersections)
+    int lookInt = static_cast<int>(lookX * 32767.0f);
+    report_.sThumbRX = static_cast<SHORT>(std::clamp(lookInt, -32768, 32767));
     report_.sThumbRY = 0;
 
     // Map throttle (0.0 to 1.0) -> Right Trigger RT (0 to 255)

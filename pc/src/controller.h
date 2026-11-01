@@ -30,7 +30,7 @@ public:
     void setRumbleCallback(RumbleCallback cb);
 
     // Updates controller axes and buttons in a single atomic IOCTL call
-    void update(float steering, float throttle, float brake, uint16_t buttons, uint8_t flags = 0);
+    void update(float steering, float throttle, float brake, uint16_t buttons, uint8_t flags = 0, float lookX = 0.0f);
 
 private:
     static VOID CALLBACK onNotificationStatic(
