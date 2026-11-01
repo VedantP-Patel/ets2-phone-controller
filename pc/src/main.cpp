@@ -83,34 +83,24 @@ namespace {
         return FALSE;
     }
 
-    // True Dual-Dispatch Input Engine for Windows & DirectX (ETS2 sys.keyboard)
-    // Sends BOTH Windows Virtual Key (wVk) and Hardware OEM Scan Code (wScan) with extended flags.
-    void injectKeyPulse(BYTE vKey, WORD scanCode = 0, bool extended = false, int holdMs = 150) {
+    // Pure DirectInput Hardware ScanCode Dispatcher for ETS2
+    void injectKeyPulse(BYTE vKey, WORD scanCode = 0, bool extended = false, int holdMs = 120) {
         WORD finalScan = scanCode ? scanCode : (WORD)MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
-        std::thread([vKey, finalScan, extended, holdMs]() {
-            DWORD downFlags = (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-            DWORD upFlags = KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-
-            // 1. Dual dispatch Key Down: keybd_event + SendInput
-            keybd_event(vKey, (BYTE)finalScan, downFlags, 0);
-
+        std::thread([finalScan, extended, holdMs]() {
             INPUT ipDown = {};
             ipDown.type = INPUT_KEYBOARD;
-            ipDown.ki.wVk = vKey;
+            ipDown.ki.wVk = 0; // Must be 0 when using KEYEVENTF_SCANCODE
             ipDown.ki.wScan = finalScan;
-            ipDown.ki.dwFlags = downFlags;
+            ipDown.ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
             SendInput(1, &ipDown, sizeof(INPUT));
 
             std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
 
-            // 2. Dual dispatch Key Up: keybd_event + SendInput
-            keybd_event(vKey, (BYTE)finalScan, upFlags, 0);
-
             INPUT ipUp = {};
             ipUp.type = INPUT_KEYBOARD;
-            ipUp.ki.wVk = vKey;
+            ipUp.ki.wVk = 0;
             ipUp.ki.wScan = finalScan;
-            ipUp.ki.dwFlags = upFlags;
+            ipUp.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
             SendInput(1, &ipUp, sizeof(INPUT));
         }).detach();
     }
@@ -118,16 +108,11 @@ namespace {
     // Continuous touch-hold state dispatcher for Horn ('H') and Roof Air Horn ('N')
     void setKeyHold(BYTE vKey, WORD scanCode, bool extended, bool isPressed) {
         WORD finalScan = scanCode ? scanCode : (WORD)MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
-        DWORD flags = (isPressed ? 0 : KEYEVENTF_KEYUP) | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-
-        // Dual dispatch: keybd_event + SendInput
-        keybd_event(vKey, (BYTE)finalScan, flags, 0);
-
         INPUT ip = {};
         ip.type = INPUT_KEYBOARD;
-        ip.ki.wVk = vKey;
+        ip.ki.wVk = 0;
         ip.ki.wScan = finalScan;
-        ip.ki.dwFlags = flags;
+        ip.ki.dwFlags = KEYEVENTF_SCANCODE | (isPressed ? 0 : KEYEVENTF_KEYUP) | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
         SendInput(1, &ip, sizeof(INPUT));
     }
 
@@ -339,20 +324,27 @@ int main() {
             clientConnectedMessage = true;
         }
 
-        // Over-Engineered Slew-Rate Limiter:
-        // Caps maximum instantaneous change to Δsteer ≤ 0.08 per 10ms frame (full lock in 125ms).
-        // Prevents any rogue network packet burst, UDP drop, or sudden spike from jerking the virtual Xbox stick!
+        // Improved Steering Pipeline:
+        // 1. Subtle non-linear curve (15% cubic blend) for fine highway center precision
+        //    without sacrificing 1:1 linear feel across the rest of the rotation range.
+        float rawSteer = std::clamp(state.steering, -1.0f, 1.0f);
+        constexpr float NON_LINEARITY = 0.15f; // 0.0 = pure linear, 0.3 = softer center
+        float shapedSteer = (1.0f - NON_LINEARITY) * rawSteer + NON_LINEARITY * (rawSteer * rawSteer * rawSteer);
+
+        // 2. Speed-adaptive smoothing: smooths micro-jitter near center,
+        //    but opens up instantly during fast counter-steering or tight maneuvers.
         static float s_smoothedSteering = 0.0f;
         static bool s_hasSteerInit = false;
         if (!s_hasSteerInit) {
-            s_smoothedSteering = state.steering;
+            s_smoothedSteering = shapedSteer;
             s_hasSteerInit = true;
         } else {
-            float delta = state.steering - s_smoothedSteering;
-            constexpr float MAX_DELTA_PER_FRAME = 0.08f;
-            s_smoothedSteering += std::clamp(delta, -MAX_DELTA_PER_FRAME, MAX_DELTA_PER_FRAME);
+            float delta = shapedSteer - s_smoothedSteering;
+            float absDelta = std::abs(delta);
+            // Dynamic alpha: 0.45 for tiny micro-movements, scaling up to 0.90 for fast turns
+            float alpha = std::clamp(0.45f + absDelta * 3.0f, 0.45f, 0.90f);
+            s_smoothedSteering += delta * alpha;
         }
-
         // Direct kernel-level update: ViGEm virtual Xbox 360 controller
         gamepad.update(s_smoothedSteering, state.throttle, state.brake, state.buttons, state.flags);
 
@@ -456,8 +448,8 @@ int main() {
             std::cout << "[TRANSMISSION] Shift Down ('Ctrl' / Joy LB)" << std::endl;
         }
         if (newFlags & (1 << 1)) {
-            injectKeyPulse('N', 0x31, false, 150);
-            std::cout << "[TRANSMISSION] Shift to Neutral ('N' / Joy Y)" << std::endl;
+            injectKeyPulse(VK_OEM_2, 0x35, false, 150);
+            std::cout << "[TRANSMISSION] Shift to Neutral ('/' scan 0x35)" << std::endl;
         }
 
         // 13. In-Game Radio Hotkeys (Full Windows Virtual Key + Scan Code Dual-Dispatch)

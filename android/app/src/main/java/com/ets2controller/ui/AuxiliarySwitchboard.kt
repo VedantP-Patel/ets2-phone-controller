@@ -40,6 +40,8 @@ data class AuxSwitchDef(
 @Composable
 fun AuxSwitchboard(
     activeMask: Int,
+    telemetryAuxFlags: Int = 0,
+    isHazardActive: Boolean = false,
     onPressChange: (Int, Boolean) -> Unit,
     onAirHornBlast: () -> Unit,
     onDismiss: () -> Unit,
@@ -98,8 +100,26 @@ fun AuxSwitchboard(
         )
     )
 
-    // Local toggled state cache for visual indicator lights
-    var activeSwitches by remember { mutableStateOf(setOf<Int>()) }
+    // Real telemetry flags from SCS SDK telemetry
+    val isDiffLocked = (telemetryAuxFlags and (1 shl 0)) != 0
+    val isLiftActive = (telemetryAuxFlags and (1 shl 1)) != 0
+    val isTrailerConnected = (telemetryAuxFlags and (1 shl 2)) != 0
+    val isHighBeamOn = (telemetryAuxFlags and (1 shl 3)) != 0
+    val isBeaconOn = (telemetryAuxFlags and (1 shl 4)) != 0
+
+    fun isSwitchEngaged(bitIndex: Int): Boolean {
+        val isPhysicallyPressed = (activeMask and (1 shl bitIndex)) != 0
+        val isTelemetryActive = when (bitIndex) {
+            18 -> isDiffLocked
+            19 -> isLiftActive
+            20 -> isTrailerConnected
+            21 -> isHighBeamOn
+            22 -> isBeaconOn
+            3 -> isHazardActive
+            else -> false
+        }
+        return isTelemetryActive || isPhysicallyPressed
+    }
 
     Box(
         modifier = modifier
@@ -164,9 +184,7 @@ fun AuxSwitchboard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 switches.take(3).forEach { sw ->
-                    val isToggled = activeSwitches.contains(sw.bitIndex)
-                    val isPhysicallyPressed = (activeMask and (1 shl sw.bitIndex)) != 0
-                    val isEngaged = isToggled || isPhysicallyPressed
+                    val isEngaged = isSwitchEngaged(sw.bitIndex)
 
                     RockerSwitchCard(
                         def = sw,
@@ -180,9 +198,6 @@ fun AuxSwitchboard(
                             if (sw.bitIndex == 23) {
                                 // Air Horn sound effect
                                 onAirHornBlast()
-                            } else {
-                                // Toggle UI active state for latching controls
-                                activeSwitches = if (isToggled) activeSwitches - sw.bitIndex else activeSwitches + sw.bitIndex
                             }
                         },
                         modifier = Modifier.weight(1f)
@@ -197,9 +212,7 @@ fun AuxSwitchboard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 switches.drop(3).forEach { sw ->
-                    val isToggled = activeSwitches.contains(sw.bitIndex)
-                    val isPhysicallyPressed = (activeMask and (1 shl sw.bitIndex)) != 0
-                    val isEngaged = isToggled || isPhysicallyPressed
+                    val isEngaged = isSwitchEngaged(sw.bitIndex)
 
                     RockerSwitchCard(
                         def = sw,
@@ -211,8 +224,6 @@ fun AuxSwitchboard(
 
                             if (sw.bitIndex == 23) {
                                 onAirHornBlast()
-                            } else {
-                                activeSwitches = if (isToggled) activeSwitches - sw.bitIndex else activeSwitches + sw.bitIndex
                             }
                         },
                         modifier = Modifier.weight(1f)

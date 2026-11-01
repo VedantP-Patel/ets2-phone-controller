@@ -7,7 +7,7 @@ constexpr size_t CONTROLLER_PACKET_SIZE = 12;
 constexpr size_t RUMBLE_PACKET_SIZE = 4;
 constexpr uint8_t RUMBLE_HEADER = 0xFB;
 
-constexpr size_t TELEMETRY_PACKET_SIZE = 32;
+constexpr size_t TELEMETRY_PACKET_SIZE = 33;
 constexpr uint8_t TELEMETRY_HEADER = 0xFC;
 
 // Decoded controller state from Phone
@@ -38,6 +38,8 @@ struct TruckTelemetryPacket {
     uint8_t dashboardFlags; // Bit 0: Left Blinker, Bit 1: Right Blinker, Bit 2: Hazard, 
                             // Bit 3: Parking Brake, Bit 4: Engine Running, Bit 5: Low Air Warning,
                             // Bit 6: Cruise Control
+    uint8_t auxStateFlags;  // NEW: Bit 0: Diff Lock, Bit 1: Lift Axle, Bit 2: Trailer Hook,
+                            //      Bit 3: High Beams, Bit 4: Beacons, Bit 5: Wipers active
     uint16_t pingTimestamp; // Heartbeat timestamp / echo for RTT ping measurement
     uint8_t speedLimitKmh;  // Legal road speed limit in km/h (0 = none)
     uint16_t routeDistanceKm; // GPS remaining distance in km
@@ -46,7 +48,7 @@ struct TruckTelemetryPacket {
     uint8_t cruiseSpeedKmh; // Target cruise control speed in km/h
     uint8_t forwardGears;   // Total forward gears count (e.g. 12, 14, 16)
     uint8_t shifterFlags;   // Bit 0: 1 = automatic / arcade, 0 = manual / sequential
-    uint8_t checksum;       // XOR checksum of bytes 0..30
+    uint8_t checksum;       // XOR checksum
 };
 
 // Decode a raw 12-byte datagram from the phone.

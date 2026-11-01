@@ -68,15 +68,35 @@ class HapticReceiver(private val context: Context) {
                                 triggerHaptics(largeMotor, smallMotor)
                             }
                         }
-                        // 2. Real-Time Truck Telemetry Packet (Header 0xFC, 32 bytes)
+                        // 2. Real-Time Truck Telemetry Packet (Header 0xFC, 32 or 33 bytes)
                         else if (header == 0xFC && len >= 32) {
-                            var csum: Byte = 0
-                            for (i in 0..30) {
-                                csum = (csum.toInt() xor buffer[i].toInt()).toByte()
+                            var valid = false
+                            var is33Byte = false
+
+                            if (len >= 33) {
+                                var csum33: Byte = 0
+                                for (i in 0..31) {
+                                    csum33 = (csum33.toInt() xor buffer[i].toInt()).toByte()
+                                }
+                                if (buffer[32] == csum33) {
+                                    valid = true
+                                    is33Byte = true
+                                }
                             }
 
-                            if (buffer[31] == csum) {
-                                val byteBuf = ByteBuffer.wrap(buffer, 0, 32).order(ByteOrder.LITTLE_ENDIAN)
+                            if (!valid) {
+                                var csum32: Byte = 0
+                                for (i in 0..30) {
+                                    csum32 = (csum32.toInt() xor buffer[i].toInt()).toByte()
+                                }
+                                if (buffer[31] == csum32) {
+                                    valid = true
+                                    is33Byte = false
+                                }
+                            }
+
+                            if (valid) {
+                                val byteBuf = ByteBuffer.wrap(buffer, 0, if (is33Byte) 33 else 32).order(ByteOrder.LITTLE_ENDIAN)
                                 byteBuf.get() // Skip header 0xFC
                                 val speedKmh = byteBuf.getFloat()
                                 val engineRpm = byteBuf.getFloat()
@@ -85,6 +105,7 @@ class HapticReceiver(private val context: Context) {
                                 val fuelPercent = byteBuf.get().toInt() and 0xFF
                                 val airPressure = byteBuf.getFloat()
                                 val flags = byteBuf.get().toInt() and 0xFF
+                                val auxFlags = if (is33Byte) (byteBuf.get().toInt() and 0xFF) else 0
                                 val pingEchoSeq = byteBuf.getShort().toInt() and 0xFFFF
                                 val speedLimit = byteBuf.get().toInt() and 0xFF
                                 val routeDist = byteBuf.getShort().toInt() and 0xFFFF
@@ -145,7 +166,8 @@ class HapticReceiver(private val context: Context) {
                                     truckDamagePct = damagePct,
                                     cruiseSpeedKmh = cruiseSpeed,
                                     forwardGears = forwardGears,
-                                    isAutomatic = isAutomatic
+                                    isAutomatic = isAutomatic,
+                                    auxStateFlags = auxFlags
                                 )
                                 onTelemetryReceived?.invoke(telemetry)
                             }

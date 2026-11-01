@@ -47,10 +47,10 @@ class SteeringManager(context: Context) : SensorEventListener {
 
     private var isCalibrated = false
 
-    // Aerospace-Grade 1-Euro Filter:
-    // mincutoff = 0.6f (rock-solid dead calm at rest; zero hand-tremor jitter)
-    // beta = 0.008f (snappy dynamic response without over-amplifying sensor derivative noise)
-    private val filter = OneEuroFilter(100f, 0.6f, 0.008f, 1.0f)
+    // Responsive 1-Euro Filter:
+    // mincutoff = 1.8f (eliminates micro-tremors while keeping <15ms center response)
+    // beta = 0.04f (instant tracking on counter-steer and tight turns)
+    private val filter = OneEuroFilter(100f, 1.8f, 0.04f, 2.5f)
 
     // Continuous Asymptotic Gravity Drift Offset (ZERO step jumps, ZERO bang-bang limit-cycle chatter)
     private var driftOffset = 0.0f
@@ -91,7 +91,11 @@ class SteeringManager(context: Context) : SensorEventListener {
     var settings: ControllerSettings = ControllerSettings()
         set(value) {
             field = value
-            filter.updateParameters(value.filterMinCutoff, value.filterBeta)
+            // Enforce responsive minimum floor even if old sluggish defaults are saved in SharedPreferences
+            filter.updateParameters(
+                value.filterMinCutoff.coerceAtLeast(1.8f),
+                value.filterBeta.coerceAtLeast(0.04f)
+            )
         }
 
     fun start() {
@@ -180,8 +184,6 @@ class SteeringManager(context: Context) : SensorEventListener {
         var cz = currentQuat[3]
 
         // 1. Inter-Frame Geodesic Shortest-Path Continuity on S^3
-        // Maintain continuity relative to the PREVIOUS frame (10ms ago), NEVER against the static baseline!
-        // In 10ms, hand rotation is tiny (<10°), so q_prev · q_curr > 0 always, unless sensor HAL inverted sign.
         if (hasPrevQuat) {
             val dotPrev = prevQuat[0] * cw + prevQuat[1] * cx + prevQuat[2] * cy + prevQuat[3] * cz
             if (dotPrev < 0f) {
@@ -198,7 +200,6 @@ class SteeringManager(context: Context) : SensorEventListener {
         hasPrevQuat = true
 
         // 2. Relative rotation in device coordinate frame: q_rel = q_baseline^-1 * q_current
-        // With q_baseline^-1 = (bw, -bx, -by, -bz)
         val bw = baselineQuat[0]
         val bx = baselineQuat[1]
         val by = baselineQuat[2]
@@ -207,16 +208,19 @@ class SteeringManager(context: Context) : SensorEventListener {
         val rw = bw * cw + bx * cx + by * cy + bz * cz
         val rz = bw * cz - bx * cy + by * cx - bz * cw
 
-        // Twist angle around screen normal (+Z axis) in [-180, 180]
-        // Clockwise turn (Turn Right) produces positive angle (+deg)
-        val twistRad = 2.0 * atan2(rz.toDouble(), rw.toDouble())
+        // Swing-Twist normalization: isolates pure Z-axis steering rotation
+        // independent of forward/backward screen pitch changes
+        val twistNorm = sqrt(rw * rw + rz * rz)
+        val twistRad = if (twistNorm > 1e-6f) {
+            2.0 * atan2((rz / twistNorm).toDouble(), (rw / twistNorm).toDouble())
+        } else {
+            0.0
+        }
         var rawTwistDeg = -Math.toDegrees(twistRad).toFloat()
         while (rawTwistDeg > 180.0f) rawTwistDeg -= 360.0f
         while (rawTwistDeg < -180.0f) rawTwistDeg += 360.0f
 
         // 3. Multi-Turn Phase Unwrapping Accumulator
-        // Tracks smooth, continuous rotation past ±180° up to full commercial lock (±450°, ±540°, ±900°+)
-        // with ZERO sudden sign flips, ZERO inversion, and smooth return to 0.00°!
         if (!hasPrevTwist) {
             continuousAngle = rawTwistDeg
             prevTwistDeg = rawTwistDeg
@@ -236,8 +240,7 @@ class SteeringManager(context: Context) : SensorEventListener {
             settings.steeringMaxAngleDeg.coerceAtLeast(10.0f)
         }
 
-        // Soft-clamp continuous angle to physical lock limit (+30° headroom) so over-rotating past full lock
-        // does not create dead rotation delay upon return!
+        // Soft-clamp continuous angle to physical lock limit (+30° headroom)
         val maxTurnLimit = (halfLockDeg + 30.0f).coerceAtLeast(180.0f)
         continuousAngle = continuousAngle.coerceIn(-maxTurnLimit, maxTurnLimit)
 
@@ -255,7 +258,6 @@ class SteeringManager(context: Context) : SensorEventListener {
         lastAngle = currentFrameAngle
 
         // Continuous Asymptotic Gravity Drift Estimator:
-        // Calculate Earth's Physical Gravitational In-Plane Landscape Orientation from filtered gravity
         val gx = filteredGravity[0]
         val gy = filteredGravity[1]
         val gz = filteredGravity[2]
@@ -271,11 +273,6 @@ class SteeringManager(context: Context) : SensorEventListener {
             while (gravAngleDeg > 180.0f) gravAngleDeg -= 360.0f
             while (gravAngleDeg < -180.0f) gravAngleDeg += 360.0f
 
-            // Asymptotic Drift Correction:
-            // CRITICAL: Only integrate drift when the wheel is in the CENTER REVOLUTION (|continuousAngle| < 15°)
-            // AND the phone is quasi-static (angularSpeed < 1.0°/s)
-            // AND the phone is NOT currently vibrating from haptic force feedback.
-            // This prevents gravity from fighting active steering turns while guaranteeing rock-solid center calibration!
             if (abs(continuousAngle) < 15.0f && angularSpeed < 1.0f && !isHapticVibrating) {
                 val currentFused = currentFrameAngle + driftOffset
                 var driftError = gravAngleDeg - currentFused
@@ -310,7 +307,6 @@ class SteeringManager(context: Context) : SensorEventListener {
             val linearEffective = ((absAngle - deadzone) / (halfLockDeg - deadzone).coerceAtLeast(1.0f)).coerceIn(0.0f, 1.0f)
 
             // C² continuous quintic smoothstep: S(u) = 6u^5 - 15u^4 + 10u^3
-            // Both 1st and 2nd derivatives are strictly 0 at the deadzone edge, guaranteeing zero twitch/jerk!
             val effective = if (absAngle < deadzone + blendWindow) {
                 val u = ((absAngle - deadzone) / blendWindow).coerceIn(0.0f, 1.0f)
                 val smooth = u * u * u * (u * (u * 6.0f - 15.0f) + 10.0f)
@@ -319,20 +315,15 @@ class SteeringManager(context: Context) : SensorEventListener {
                 linearEffective
             }
 
-            val dynamicCurve = if (settings.wheelMode1to1 || settings.steeringCurvePower == 1.0f) {
-                1.0f
+            // Smooth progressive curve across the ENTIRE 0..100% range (ZERO 60-degree step jump!)
+            val casterCurveBoost = settings.casterSpringStrength.coerceIn(0.0f, 1.0f) * 0.35f
+            val dynamicCurve = if (settings.wheelMode1to1) {
+                1.0f + (0.20f * speedFactor) + (casterCurveBoost * 0.5f)
             } else {
-                settings.steeringCurvePower + (0.35f * speedFactor)
+                settings.steeringCurvePower + (0.35f * speedFactor) + casterCurveBoost
             }
 
             steerVal = sign(totalAngle) * if (dynamicCurve == 1.0f) effective else effective.pow(dynamicCurve)
-        }
-
-        // Speed-Sensitive Simulated Caster Return-To-Center Physics
-        if (settings.casterSpringStrength > 0.0f && absAngle < 60.0f) {
-            val speedCasterBoost = 1.0f + (0.5f * speedFactor)
-            val springDampening = (settings.casterSpringStrength * 0.35f * speedCasterBoost).coerceIn(0.0f, 0.55f)
-            steerVal *= (1.0f - springDampening)
         }
 
         normalizedSteering = steerVal.coerceIn(-1.0f, 1.0f)
@@ -349,7 +340,6 @@ class SteeringManager(context: Context) : SensorEventListener {
         }
 
         // Auto-Cancelling Turn Indicators (ACTI):
-        // Real automotive stalk mechanism: arms during turn (>20°), trips off on wheel return (<5°)
         if (settings.autoCancelBlinkers) {
             if (isLeftBlinkerActive) {
                 if (totalAngle < -20.0f) {

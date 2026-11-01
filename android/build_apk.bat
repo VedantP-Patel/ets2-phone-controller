@@ -3,53 +3,37 @@ setlocal
 cd /d "%~dp0"
 
 echo =========================================================
-echo   ETS2 Phone Controller - Android APK Build
+echo   ETS2 Phone Controller - Android APK Build ^& Install
 echo =========================================================
 echo.
 
-REM Set Java Home to Android Studio's bundled JBR
+REM Set Java Home to Android Studio's bundled JBR or installed JDK
 if exist "C:\Program Files\Android\Android Studio\jbr" (
     set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
 ) else if exist "C:\Program Files\Java\jdk-25" (
     set "JAVA_HOME=C:\Program Files\Java\jdk-25"
+) else if exist "C:\Program Files\Java\jdk-21" (
+    set "JAVA_HOME=C:\Program Files\Java\jdk-21"
+) else if exist "C:\Program Files\Java\jdk-17" (
+    set "JAVA_HOME=C:\Program Files\Java\jdk-17"
 )
 
-REM Set Android SDK
-set "ANDROID_HOME=C:\android_sdk"
+REM Set Android SDK (checks C:\android_sdk and default AppData location)
+if exist "C:\android_sdk" (
+    set "ANDROID_HOME=C:\android_sdk"
+) else if exist "%LOCALAPPDATA%\Android\Sdk" (
+    set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
+)
 
 echo Using JAVA_HOME: %JAVA_HOME%
 echo Using ANDROID_HOME: %ANDROID_HOME%
 echo.
 
-REM Locate Gradle
-set "GRADLE_EXEC="
-for /r "C:\Users\Vedan\.gradle\wrapper\dists" %%f in (gradle.bat) do (
-    if exist "%%f" (
-        set "GRADLE_EXEC=%%f"
-        goto :found_gradle
-    )
-)
-
-:found_gradle
-if "%GRADLE_EXEC%"=="" (
-    echo [INFO] Please open this project folder in Android Studio:
-    echo        %~dp0
-    echo And click 'Build' ^> 'Build Bundle(s) / APK(s)' ^> 'Build APK(s)'.
-    pause
-    exit /b 0
-)
-
-echo Found Gradle: %GRADLE_EXEC%
-echo Compiling Debug APK...
-echo.
-
-call "%GRADLE_EXEC%" assembleDebug
+echo Compiling Debug APK using Gradle Wrapper...
+call gradlew.bat assembleDebug
 if errorlevel 1 (
     echo.
-    echo [NOTE] If Gradle build requires internet sync for initial plugins,
-    echo        simply open this folder in Android Studio:
-    echo        %~dp0
-    echo        and click 'Run' or 'Build APK'.
+    echo [ERROR] Build failed! Check the Gradle output above.
     pause
     exit /b 1
 )
@@ -59,5 +43,21 @@ echo =========================================================
 echo   APK Build Successful!
 echo   Location: app\build\outputs\apk\debug\app-debug.apk
 echo =========================================================
-pause
+echo.
 
+REM Automatically install onto connected phone if ADB is available
+if exist "%ANDROID_HOME%\platform-tools\adb.exe" (
+    echo Installing updated APK onto connected phone...
+    "%ANDROID_HOME%\platform-tools\adb.exe" install -r "app\build\outputs\apk\debug\app-debug.apk"
+) else (
+    where adb >nul 2>nul
+    if %errorlevel%==0 (
+        echo Installing updated APK onto connected phone...
+        adb install -r "app\build\outputs\apk\debug\app-debug.apk"
+    ) else (
+        echo [INFO] Copy app\build\outputs\apk\debug\app-debug.apk to your phone to install.
+    )
+)
+
+echo.
+pause

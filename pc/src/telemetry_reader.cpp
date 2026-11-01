@@ -97,6 +97,17 @@ void TelemetryReader::pollTelemetry(const ControllerState& latestInput, TruckTel
             if (map->truck_b.cruiseControl)                                     flags |= (1 << 6);
 
             outPacket->dashboardFlags = flags;
+
+            // Auxiliary truck accessory states
+            uint8_t auxFlags = 0;
+            if (map->truck_b.differentialLock)                                  auxFlags |= (1 << 0);
+            if (map->truck_b.liftAxle || map->truck_b.liftAxleIndicator)        auxFlags |= (1 << 1);
+            if (map->trailer.trailer[0].com_b.attached)                         auxFlags |= (1 << 2);
+            if (map->truck_b.lightsBeamHigh)                                    auxFlags |= (1 << 3);
+            if (map->truck_b.lightsBeacon)                                      auxFlags |= (1 << 4);
+            if (map->truck_b.wipers)                                            auxFlags |= (1 << 5);
+
+            outPacket->auxStateFlags = auxFlags;
             outPacket->pingTimestamp = latestInput.sequenceId;
 
             // v2.0 Extended Telemetry Channels
@@ -237,6 +248,7 @@ void TelemetryReader::updateSimulation(const ControllerState& input, float dt, T
     if (simEngineOn_)     flags |= (1 << 4);
     if (simAirPressure_ < 6.0f) flags |= (1 << 5);
     outPacket->dashboardFlags = flags;
+    outPacket->auxStateFlags = 0;
     outPacket->pingTimestamp = input.sequenceId;
 
     // Simulation v2.0 fields

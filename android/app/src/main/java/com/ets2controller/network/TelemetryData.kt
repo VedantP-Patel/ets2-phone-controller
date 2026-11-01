@@ -22,5 +22,6 @@ data class TruckTelemetry(
     val truckDamagePct: Int = 0,
     val cruiseSpeedKmh: Int = 0,
     val forwardGears: Int = 14,
-    val isAutomatic: Boolean = true
+    val isAutomatic: Boolean = true,
+    val auxStateFlags: Int = 0
 )

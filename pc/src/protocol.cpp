@@ -66,21 +66,22 @@ void encodeTelemetryPacket(const TruckTelemetryPacket& telem, uint8_t* outBuffer
     outBuffer[14] = telem.fuelPercent;
     std::memcpy(&outBuffer[15], &telem.airPressureBar, 4);
     outBuffer[19] = telem.dashboardFlags;
-    std::memcpy(&outBuffer[20], &telem.pingTimestamp, 2);
-    outBuffer[22] = telem.speedLimitKmh;
-    std::memcpy(&outBuffer[23], &telem.routeDistanceKm, 2);
-    std::memcpy(&outBuffer[25], &telem.routeTimeMin, 2);
-    outBuffer[27] = telem.truckDamagePct;
-    outBuffer[28] = telem.cruiseSpeedKmh;
-    outBuffer[29] = telem.forwardGears;
-    outBuffer[30] = telem.shifterFlags;
+    outBuffer[20] = telem.auxStateFlags;
+    std::memcpy(&outBuffer[21], &telem.pingTimestamp, 2);
+    outBuffer[23] = telem.speedLimitKmh;
+    std::memcpy(&outBuffer[24], &telem.routeDistanceKm, 2);
+    std::memcpy(&outBuffer[26], &telem.routeTimeMin, 2);
+    outBuffer[28] = telem.truckDamagePct;
+    outBuffer[29] = telem.cruiseSpeedKmh;
+    outBuffer[30] = telem.forwardGears;
+    outBuffer[31] = telem.shifterFlags;
 
-    // XOR checksum of bytes 0..30 into byte 31
+    // XOR checksum of bytes 0..31 into byte 32
     uint8_t csum = 0;
-    for (size_t i = 0; i < 31; i++) {
+    for (size_t i = 0; i < 32; i++) {
         csum ^= outBuffer[i];
     }
-    outBuffer[31] = csum;
+    outBuffer[32] = csum;
 }
 
 bool decodeTelemetryPacket(const uint8_t* data, size_t length, TruckTelemetryPacket* outTelem) {
@@ -88,10 +89,10 @@ bool decodeTelemetryPacket(const uint8_t* data, size_t length, TruckTelemetryPac
     if (data[0] != TELEMETRY_HEADER) return false;
 
     uint8_t csum = 0;
-    for (size_t i = 0; i < 31; i++) {
+    for (size_t i = 0; i < 32; i++) {
         csum ^= data[i];
     }
-    if (csum != data[31]) return false;
+    if (csum != data[32]) return false;
 
     outTelem->header = data[0];
     std::memcpy(&outTelem->speedKmh, &data[1], 4);
@@ -101,15 +102,16 @@ bool decodeTelemetryPacket(const uint8_t* data, size_t length, TruckTelemetryPac
     outTelem->fuelPercent = data[14];
     std::memcpy(&outTelem->airPressureBar, &data[15], 4);
     outTelem->dashboardFlags = data[19];
-    std::memcpy(&outTelem->pingTimestamp, &data[20], 2);
-    outTelem->speedLimitKmh = data[22];
-    std::memcpy(&outTelem->routeDistanceKm, &data[23], 2);
-    std::memcpy(&outTelem->routeTimeMin, &data[25], 2);
-    outTelem->truckDamagePct = data[27];
-    outTelem->cruiseSpeedKmh = data[28];
-    outTelem->forwardGears = data[29];
-    outTelem->shifterFlags = data[30];
-    outTelem->checksum = data[31];
+    outTelem->auxStateFlags = data[20];
+    std::memcpy(&outTelem->pingTimestamp, &data[21], 2);
+    outTelem->speedLimitKmh = data[23];
+    std::memcpy(&outTelem->routeDistanceKm, &data[24], 2);
+    std::memcpy(&outTelem->routeTimeMin, &data[26], 2);
+    outTelem->truckDamagePct = data[28];
+    outTelem->cruiseSpeedKmh = data[29];
+    outTelem->forwardGears = data[30];
+    outTelem->shifterFlags = data[31];
+    outTelem->checksum = data[32];
 
     return true;
 }

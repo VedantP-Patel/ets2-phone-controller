@@ -155,9 +155,11 @@ fun ControllerScreen(
                 Spacer(modifier = Modifier.width(4.dp))
 
                 // Left Column 2 (4 buttons)
+                val isHighBeamOn = (telemetry.auxStateFlags and (1 shl 3)) != 0
+                val innerMask = if (isHighBeamOn) (buttonMask or (1 shl 21)) else buttonMask
                 ButtonColumn(
                     buttons = leftInnerButtons,
-                    activeMask = buttonMask,
+                    activeMask = innerMask,
                     onPressStateChange = onButtonStateChange,
                     modifier = Modifier.width(84.dp)
                 )
@@ -356,6 +358,8 @@ fun ControllerScreen(
         ) {
             AuxSwitchboard(
                 activeMask = buttonMask,
+                telemetryAuxFlags = telemetry.auxStateFlags,
+                isHazardActive = telemetry.isHazard,
                 onPressChange = onButtonStateChange,
                 onAirHornBlast = onAirHornBlast,
                 onDismiss = { showAuxSwitchboard = false },
