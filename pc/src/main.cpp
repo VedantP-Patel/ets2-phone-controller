@@ -83,32 +83,52 @@ namespace {
         return FALSE;
     }
 
-    // DirectInput hardware scan code simulation for DirectX games (ETS2 / ATS)
-    void triggerScanCode(WORD scanCode, bool extended = false, int holdMs = 200) {
-        std::thread([scanCode, extended, holdMs]() {
-            INPUT ip[2] = {};
+    // True Dual-Dispatch Input Engine for Windows & DirectX (ETS2 sys.keyboard)
+    // Sends BOTH Windows Virtual Key (wVk) and Hardware OEM Scan Code (wScan) with extended flags.
+    void injectKeyPulse(BYTE vKey, WORD scanCode = 0, bool extended = false, int holdMs = 150) {
+        WORD finalScan = scanCode ? scanCode : (WORD)MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
+        std::thread([vKey, finalScan, extended, holdMs]() {
+            DWORD downFlags = (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+            DWORD upFlags = KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
 
-            // 1. Key Down (wVk must strictly be 0 when KEYEVENTF_SCANCODE is specified for DirectX DirectInput)
-            ip[0].type = INPUT_KEYBOARD;
-            ip[0].ki.wVk = 0;
-            ip[0].ki.wScan = scanCode;
-            ip[0].ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+            // 1. Dual dispatch Key Down: keybd_event + SendInput
+            keybd_event(vKey, (BYTE)finalScan, downFlags, 0);
 
-            // 2. Key Up
-            ip[1].type = INPUT_KEYBOARD;
-            ip[1].ki.wVk = 0;
-            ip[1].ki.wScan = scanCode;
-            ip[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-
-            // Dual dispatch: keybd_event with scan code + SendInput
-            keybd_event(0, (BYTE)scanCode, (extended ? KEYEVENTF_EXTENDEDKEY : 0), 0);
-            SendInput(1, &ip[0], sizeof(INPUT));
+            INPUT ipDown = {};
+            ipDown.type = INPUT_KEYBOARD;
+            ipDown.ki.wVk = vKey;
+            ipDown.ki.wScan = finalScan;
+            ipDown.ki.dwFlags = downFlags;
+            SendInput(1, &ipDown, sizeof(INPUT));
 
             std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
 
-            keybd_event(0, (BYTE)scanCode, KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0), 0);
-            SendInput(1, &ip[1], sizeof(INPUT));
+            // 2. Dual dispatch Key Up: keybd_event + SendInput
+            keybd_event(vKey, (BYTE)finalScan, upFlags, 0);
+
+            INPUT ipUp = {};
+            ipUp.type = INPUT_KEYBOARD;
+            ipUp.ki.wVk = vKey;
+            ipUp.ki.wScan = finalScan;
+            ipUp.ki.dwFlags = upFlags;
+            SendInput(1, &ipUp, sizeof(INPUT));
         }).detach();
+    }
+
+    // Continuous touch-hold state dispatcher for Horn ('H') and Roof Air Horn ('N')
+    void setKeyHold(BYTE vKey, WORD scanCode, bool extended, bool isPressed) {
+        WORD finalScan = scanCode ? scanCode : (WORD)MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
+        DWORD flags = (isPressed ? 0 : KEYEVENTF_KEYUP) | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+
+        // Dual dispatch: keybd_event + SendInput
+        keybd_event(vKey, (BYTE)finalScan, flags, 0);
+
+        INPUT ip = {};
+        ip.type = INPUT_KEYBOARD;
+        ip.ki.wVk = vKey;
+        ip.ki.wScan = finalScan;
+        ip.ki.dwFlags = flags;
+        SendInput(1, &ip, sizeof(INPUT));
     }
 
     // Background thread that broadcasts an auto-discovery beacon every 1.5 seconds
@@ -336,7 +356,7 @@ int main() {
         // Direct kernel-level update: ViGEm virtual Xbox 360 controller
         gamepad.update(s_smoothedSteering, state.throttle, state.brake, state.buttons, state.flags);
 
-        // Handle ETS2 Hotkeys via SendInput & Gamepad combos:
+        // Handle ETS2 Hotkeys via Dual-Dispatch SendInput & DirectInput:
         static uint16_t s_prevButtons = 0;
         static uint8_t s_prevFlags = 0;
         uint16_t newBtns = state.buttons & ~s_prevButtons;
@@ -344,142 +364,156 @@ int main() {
         s_prevButtons = state.buttons;
         s_prevFlags = state.flags;
 
-        // Bit 0: HORN / OK -> DirectInput hardware scan code 0x23 ('H') + Joy R3 / Joy A
-        if (newBtns & (1 << 0)) {
-            triggerScanCode(0x23, false, 250); // 'H' key
-            std::cout << "[HORN] Horn blast ('H' / Joy R3)" << std::endl;
+        // 1. Bit 0: Continuous HORN tracking ('H' key, wVk = 'H' 0x48, scan code 0x23)
+        // In ETS2, horn is an active hold control: hold to honk continuously, release to stop.
+        bool hornPressed = (state.buttons & (1 << 0)) != 0;
+        static bool s_hornActive = false;
+        if (hornPressed != s_hornActive) {
+            setKeyHold('H', 0x23, false, hornPressed);
+            s_hornActive = hornPressed;
+            if (hornPressed) {
+                std::cout << "[HORN] Continuous Horn ACTIVE (Hold 'H' / Joy R3)" << std::endl;
+            } else {
+                std::cout << "[HORN] Horn RELEASED" << std::endl;
+            }
         }
 
-        // Bit 1: Engine Start/Stop -> DirectInput hardware scan code 0x12 ('E') + Joy D-Pad Right (Hold 1.2s)
+        // 2. Flags Bit 7: Continuous Roof Air Horn ('N' key, wVk = 'N' 0x4E, scan code 0x31)
+        bool airHornPressed = (state.flags & (1 << 7)) != 0;
+        static bool s_airHornActive = false;
+        if (airHornPressed != s_airHornActive) {
+            setKeyHold('N', 0x31, false, airHornPressed);
+            s_airHornActive = airHornPressed;
+            if (airHornPressed) {
+                std::cout << "[AIR HORN] Roof Air Horn ACTIVE (Hold 'N')" << std::endl;
+            } else {
+                std::cout << "[AIR HORN] Roof Air Horn RELEASED" << std::endl;
+            }
+        }
+
+        // 3. Bit 1: Engine Start/Stop -> 'E' (Hold 800ms) + Joy D-Pad Right
         if (newBtns & (1 << 1)) {
-            triggerScanCode(0x12, false, 800);
-            std::cout << "[ENGINE] Start/Stop Engine ('E' / Joy D-Pad Right (Hold))" << std::endl;
+            injectKeyPulse('E', 0x12, false, 800);
+            std::cout << "[ENGINE] Start/Stop Engine ('E' / Joy D-Pad Right)" << std::endl;
         }
 
-        // Bit 2: LIGHTS -> DirectInput hardware scan code 0x26 ('L') + Joy (X)
+        // 4. Bit 2: LIGHTS -> 'L' + Joy (X)
         if (newBtns & (1 << 2)) {
-            triggerScanCode(0x26, false, 150); // 'L' key
+            injectKeyPulse('L', 0x26, false, 150);
             std::cout << "[LIGHTS] Headlights toggle ('L' / Joy X)" << std::endl;
         }
 
-        // Bit 3: HAZARD -> DirectInput hardware scan code 0x21 ('F') + Joy Back
+        // 5. Bit 3: HAZARD -> 'F' + Joy Back
         if (newBtns & (1 << 3)) {
-            triggerScanCode(0x21, false, 150); // 'F' key
+            injectKeyPulse('F', 0x21, false, 150);
             std::cout << "[HAZARD] Hazard Warning Flasher ('F' / Joy Back)" << std::endl;
         }
 
-        // Bit 6: Parking Brake -> DirectInput hardware scan code 0x39 (Space) + Joy D-Pad Down (Hold 1.0s)
-        if (newBtns & (1 << 6)) {
-            triggerScanCode(0x39, false, 150);
-            std::cout << "[PARK BRK] Parking Brake ('Space' / Joy D-Pad Down (Hold))" << std::endl;
-        }
-
-        // Bit 7: RETARDER / MOTOR BRAKE -> DirectInput hardware scan code 0x30 ('B') + Joy L3
-        if (newBtns & (1 << 7)) {
-            triggerScanCode(0x30, false, 150); // 'B' key
-            std::cout << "[RETARDER] Motor Brake ('B' / Joy L3)" << std::endl;
-        }
-
-        // Bit 8: MAP / ADVISOR -> DirectInput hardware scan code 0x3F ('F5') + Joy Y
-        if (newBtns & (1 << 8)) {
-            triggerScanCode(0x3F, false, 150); // 'F5' Route Advisor zoom
-            std::cout << "[MAP / ADVISOR] Route Advisor Mode ('F5' / Joy Y)" << std::endl;
-        }
-
-        // Bit 9: PAUSE / CRUISE -> DirectInput hardware scan code 0x2E ('C') + Joy B (Hold 600ms)
-        if (newBtns & (1 << 9)) {
-            triggerScanCode(0x2E, false, 200); // 'C' key
-            std::cout << "[CRUISE] Cruise Control toggle ('C' / Joy B)" << std::endl;
-        }
-
-        // Transmission triggers: Dual dispatch (DirectInput 'Shift'/'Ctrl'/'/' + Joy RB/LB/Y)
-        if (newBtns & (1 << 10)) {
-            triggerScanCode(0x2A, false, 200); // Left Shift (scancode 0x2A -> "Shift")
-            std::cout << "[TRANSMISSION] Shift Up ('Shift' / Joy RB)" << std::endl;
-        }
-        if (newBtns & (1 << 11)) {
-            triggerScanCode(0x1D, false, 200); // Left Ctrl (scancode 0x1D -> "Ctrl")
-            std::cout << "[TRANSMISSION] Shift Down ('Ctrl' / Joy LB)" << std::endl;
-        }
-        if (newFlags & (1 << 1)) {
-            triggerScanCode(0x35, false, 200); // '/' key
-            std::cout << "[TRANSMISSION] Shift to Neutral ('/' / Joy Y)" << std::endl;
-        }
-
-        // Handle ETS2 in-game Radio hotkeys via DirectInput hardware scan codes:
-        // Bit 14: Audio Player Toggle ('R' -> scan code 0x13)
-        // Bit 15: Audio Player Next Favorite (Page Down -> scan code 0x51 extended)
-        // Flags Bit 0: Audio Player Previous Favorite (Page Up -> scan code 0x49 extended)
-        if (newBtns & (1 << 14)) {
-            triggerScanCode(0x13, false, 150);
-            std::cout << "[RADIO] Audio Player toggled ('R')" << std::endl;
-        }
-        if (newBtns & (1 << 15)) {
-            triggerScanCode(0x51, true, 150);
-            std::cout << "[RADIO] Next Favorite station ('Page Down')" << std::endl;
-        }
-        if (newFlags & (1 << 0)) {
-            triggerScanCode(0x49, true, 150);
-            std::cout << "[RADIO] Previous Favorite station ('Page Up')" << std::endl;
-        }
-
-        // Indicator triggers: Send DirectInput scan codes '[' (0x1A) and ']' (0x1B) + Gamepad D-Pad Left/Right
+        // 6. Bit 4: LEFT TURN INDICATOR -> '[' + Joy D-Pad Left
         if (newBtns & (1 << 4)) {
-            triggerScanCode(0x1A, false, 150); // '[' key
+            injectKeyPulse(VK_OEM_4, 0x1A, false, 150);
             std::cout << "[INDICATOR] Left Turn Indicator ('[' / Joy D-Pad Left)" << std::endl;
         }
+
+        // 7. Bit 5: RIGHT TURN INDICATOR -> ']' + Joy D-Pad Right
         if (newBtns & (1 << 5)) {
-            triggerScanCode(0x1B, false, 150); // ']' key
+            injectKeyPulse(VK_OEM_6, 0x1B, false, 150);
             std::cout << "[INDICATOR] Right Turn Indicator (']' / Joy D-Pad Right)" << std::endl;
         }
 
-        // Bit 12: Wipers -> DirectInput scan code 0x19 ('P')
+        // 8. Bit 6: Parking Brake -> Space + Joy D-Pad Down
+        if (newBtns & (1 << 6)) {
+            injectKeyPulse(VK_SPACE, 0x39, false, 150);
+            std::cout << "[PARK BRK] Parking Brake ('Space' / Joy D-Pad Down)" << std::endl;
+        }
+
+        // 9. Bit 7: RETARDER / MOTOR BRAKE -> 'B' + Joy L3
+        if (newBtns & (1 << 7)) {
+            injectKeyPulse('B', 0x30, false, 150);
+            std::cout << "[RETARDER] Motor Brake ('B' / Joy L3)" << std::endl;
+        }
+
+        // 10. Bit 8: MAP / ADVISOR -> F5 + Joy Y
+        if (newBtns & (1 << 8)) {
+            injectKeyPulse(VK_F5, 0x3F, false, 150);
+            std::cout << "[MAP / ADVISOR] Route Advisor Mode ('F5' / Joy Y)" << std::endl;
+        }
+
+        // 11. Bit 9: PAUSE / CRUISE -> 'C' + Joy B
+        if (newBtns & (1 << 9)) {
+            injectKeyPulse('C', 0x2E, false, 200);
+            std::cout << "[CRUISE] Cruise Control toggle ('C' / Joy B)" << std::endl;
+        }
+
+        // 12. Transmission Triggers: Native 'Shift' / 'Ctrl' / 'N' + Joy RB / LB / Y
+        // Uses native VK_LSHIFT & VK_LCONTROL (Zero camera pitch, guaranteed 100% factory default shifting!)
+        if (newBtns & (1 << 10)) {
+            injectKeyPulse(VK_LSHIFT, 0x2A, false, 150);
+            std::cout << "[TRANSMISSION] Shift Up ('Shift' / Joy RB)" << std::endl;
+        }
+        if (newBtns & (1 << 11)) {
+            injectKeyPulse(VK_LCONTROL, 0x1D, false, 150);
+            std::cout << "[TRANSMISSION] Shift Down ('Ctrl' / Joy LB)" << std::endl;
+        }
+        if (newFlags & (1 << 1)) {
+            injectKeyPulse('N', 0x31, false, 150);
+            std::cout << "[TRANSMISSION] Shift to Neutral ('N' / Joy Y)" << std::endl;
+        }
+
+        // 13. In-Game Radio Hotkeys (Full Windows Virtual Key + Scan Code Dual-Dispatch)
+        // Bit 14: Audio Player Toggle ('R', wVk = 'R' 0x52, scan code 0x13)
+        if (newBtns & (1 << 14)) {
+            injectKeyPulse('R', 0x13, false, 150);
+            std::cout << "[RADIO] Audio Player toggled ('R')" << std::endl;
+        }
+        // Bit 15: Audio Player Next Favorite (Page Down, wVk = VK_NEXT 0x22, scan code 0x51 extended)
+        if (newBtns & (1 << 15)) {
+            injectKeyPulse(VK_NEXT, 0x51, true, 150);
+            std::cout << "[RADIO] Next Favorite station ('Page Down')" << std::endl;
+        }
+        // Flags Bit 0: Audio Player Previous Favorite (Page Up, wVk = VK_PRIOR 0x21, scan code 0x49 extended)
+        if (newFlags & (1 << 0)) {
+            injectKeyPulse(VK_PRIOR, 0x49, true, 150);
+            std::cout << "[RADIO] Previous Favorite station ('Page Up')" << std::endl;
+        }
+
+        // 14. Bit 12: Wipers -> 'P' + Joy D-Pad Down
         if (newBtns & (1 << 12)) {
-            triggerScanCode(0x19, false, 150);
+            injectKeyPulse('P', 0x19, false, 150);
             std::cout << "[WIPERS] Windshield Wipers ('P')" << std::endl;
         }
 
-        // Bit 13: Camera -> DirectInput scan code 0x02 ('1' for interior / cycle views)
+        // 15. Bit 13: Camera -> '1' (Interior / Cycle Views) + Joy D-Pad Up
         if (newBtns & (1 << 13)) {
-            triggerScanCode(0x02, false, 150);
+            injectKeyPulse('1', 0x02, false, 150);
             std::cout << "[CAMERA] Interior / Camera cycle ('1')" << std::endl;
         }
 
-        // Auxiliary Heavy Truck Switchboard Controls (Flags Bits 2..7):
+        // 16. Auxiliary Heavy Truck Switchboard Controls (Flags Bits 2..6):
         // Flags Bit 2: Differential Lock ('V' -> scan code 0x2F)
         if (newFlags & (1 << 2)) {
-            triggerScanCode(0x2F, false, 150);
+            injectKeyPulse('V', 0x2F, false, 150);
             std::cout << "[DIFF LOCK] Differential Lock toggled ('V')" << std::endl;
         }
-
         // Flags Bit 3: Lift / Drop Axle ('U' -> scan code 0x16)
         if (newFlags & (1 << 3)) {
-            triggerScanCode(0x16, false, 150);
+            injectKeyPulse('U', 0x16, false, 150);
             std::cout << "[LIFT AXLE] Lift Axle toggled ('U')" << std::endl;
         }
-
         // Flags Bit 4: Trailer Hook / Decouple ('T' -> scan code 0x14)
         if (newFlags & (1 << 4)) {
-            triggerScanCode(0x14, false, 200);
+            injectKeyPulse('T', 0x14, false, 200);
             std::cout << "[TRAILER] Trailer Hook / Decouple ('T')" << std::endl;
         }
-
         // Flags Bit 5: High Beams ('K' -> scan code 0x25)
         if (newFlags & (1 << 5)) {
-            triggerScanCode(0x25, false, 150);
+            injectKeyPulse('K', 0x25, false, 150);
             std::cout << "[HIGH BEAMS] High Beams toggled ('K')" << std::endl;
         }
-
         // Flags Bit 6: Beacon Strobe Lights ('O' -> scan code 0x18)
         if (newFlags & (1 << 6)) {
-            triggerScanCode(0x18, false, 150);
+            injectKeyPulse('O', 0x18, false, 150);
             std::cout << "[BEACONS] Roof Strobe Beacons ('O')" << std::endl;
-        }
-
-        // Flags Bit 7: Heavy Air Horn ('N' -> scan code 0x31)
-        if (newFlags & (1 << 7)) {
-            triggerScanCode(0x31, false, 350);
-            std::cout << "[AIR HORN] Roof Air Horn blast ('N')" << std::endl;
         }
 
         // Print stats every 5 seconds

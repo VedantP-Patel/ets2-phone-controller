@@ -50,7 +50,7 @@ private:
     RumbleCallback rumbleCallback_;
     std::atomic<bool> initialized_{false};
 
-    // Hold & pulse timers for ETS2 default button combos
+    // Hold & pulse timers for ETS2 default gamepad combos
     std::chrono::steady_clock::time_point hornPulseUntil_{};
     std::chrono::steady_clock::time_point engineHoldUntil_{};
     std::chrono::steady_clock::time_point lightsPulseUntil_{};
@@ -68,6 +68,5 @@ private:
     std::chrono::steady_clock::time_point neutralHoldUntil_{};
     uint16_t prevButtons_ = 0;
     uint8_t prevFlags_ = 0;
-    uint32_t activeKeyMask_ = 0;
 };
 

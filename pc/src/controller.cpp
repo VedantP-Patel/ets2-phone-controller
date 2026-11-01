@@ -70,15 +70,6 @@ bool VirtualGamepad::initialize() {
 void VirtualGamepad::shutdown() {
     if (!initialized_) return;
 
-    // Release any held virtual keys
-    for (int i = 0; i < 15; ++i) {
-        if (activeKeyMask_ & (1 << i)) {
-            BYTE vk = (i == 4) ? VK_OEM_4 : (i == 5) ? VK_OEM_6 : (i == 6) ? VK_SPACE : (i == 10) ? VK_LSHIFT : (i == 11) ? VK_LCONTROL : 0;
-            keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
-        }
-    }
-    activeKeyMask_ = 0;
-
     if (target_) {
         vigem_target_x360_unregister_notification(target_);
         vigem_target_remove(client_, target_);
@@ -123,37 +114,6 @@ void VirtualGamepad::handleNotification(UCHAR largeMotor, UCHAR smallMotor) {
     }
 }
 
-struct KeyMapping {
-    BYTE vk;
-    BYTE scan;
-};
-
-static const KeyMapping g_keyMappings[15] = {
-    { 'H', 0x23 },          // 0: HORN
-    { 'E', 0x12 },          // 1: ENGINE
-    { 'L', 0x26 },          // 2: LIGHTS
-    { 'F', 0x21 },          // 3: HAZARD
-    { VK_OEM_4, 0x1A },     // 4: LEFT TURN ([)
-    { VK_OEM_6, 0x1B },     // 5: RIGHT TURN (])
-    { VK_SPACE, 0x39 },     // 6: PARKING BRAKE
-    { 'B', 0x30 },          // 7: EXHAUST / MOTOR BRAKE
-    { 'M', 0x32 },          // 8: MAP / ADVISOR
-    { 'C', 0x2E },          // 9: CRUISE CONTROL
-    { VK_LSHIFT, 0x2A },    // 10: GEAR UP (Shift)
-    { VK_LCONTROL, 0x1D },  // 11: GEAR DOWN (Ctrl)
-    { 'P', 0x19 },          // 12: WIPERS
-    { '1', 0x02 },          // 13: CAMERA
-    { 'N', 0x31 }           // 14: NEUTRAL
-};
-
-static void triggerKey(int index, bool press) {
-    if (index < 0 || index >= 15) return;
-    BYTE vk = g_keyMappings[index].vk;
-    BYTE scan = g_keyMappings[index].scan;
-    DWORD flags = (press ? 0 : KEYEVENTF_KEYUP);
-    keybd_event(vk, scan, flags, 0);
-}
-
 void VirtualGamepad::update(float steering, float throttle, float brake, uint16_t buttons, uint8_t flags) {
     if (!initialized_ || !target_ || !client_) return;
 
@@ -163,7 +123,7 @@ void VirtualGamepad::update(float steering, float throttle, float brake, uint16_
     report_.sThumbLX = static_cast<SHORT>(steerInt);
     report_.sThumbLY = 0;
 
-    // Right thumbstick default centered
+    // Right thumbstick permanently centered (ensures ZERO camera pitch or yaw jitter)
     report_.sThumbRX = 0;
     report_.sThumbRY = 0;
 
@@ -182,89 +142,63 @@ void VirtualGamepad::update(float steering, float throttle, float brake, uint16_
     prevButtons_ = buttons;
     prevFlags_ = flags;
 
-    // Direct Dual-Dispatch Key Release Watcher
-    auto checkKeyRelease = [&](int bitIndex, const std::chrono::steady_clock::time_point& until) {
-        if ((activeKeyMask_ & (1 << bitIndex)) && (now >= until)) {
-            triggerKey(bitIndex, false);
-            activeKeyMask_ &= ~(1 << bitIndex);
-        }
-    };
-
-    checkKeyRelease(0, hornPulseUntil_);
-    checkKeyRelease(1, engineHoldUntil_);
-    checkKeyRelease(2, lightsPulseUntil_);
-    checkKeyRelease(3, hazardHoldUntil_);
-    checkKeyRelease(4, leftTurnPulseUntil_);
-    checkKeyRelease(5, rightTurnPulseUntil_);
-    checkKeyRelease(6, parkHoldUntil_);
-    checkKeyRelease(7, exhaustPulseUntil_);
-    checkKeyRelease(8, mapPulseUntil_);
-    checkKeyRelease(9, cruiseHoldUntil_);
-    checkKeyRelease(10, gearUpPulseUntil_);
-    checkKeyRelease(11, gearDownPulseUntil_);
-    checkKeyRelease(12, wiperPulseUntil_);
-    checkKeyRelease(13, camPulseUntil_);
-    checkKeyRelease(14, neutralHoldUntil_);
-
-    auto pressKey = [&](int bitIndex, std::chrono::milliseconds duration) {
-        triggerKey(bitIndex, true);
-        activeKeyMask_ |= (1 << bitIndex);
+    // Trigger pulse and hold timers on rising edges (ensures 100% detection by ETS2's polling rate)
+    auto triggerPulse = [&](std::chrono::milliseconds duration) {
         return now + duration;
     };
 
-    // Trigger auto-hold timers & direct keyboard events on rising edge
-    if (newPresses & (1 << 0)) { // Bit 0: HORN / OK -> 180ms pulse
-        hornPulseUntil_ = pressKey(0, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 0)) { // Bit 0: HORN
+        hornPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 1)) { // Bit 1: ENGINE -> 600ms hold
-        engineHoldUntil_ = pressKey(1, std::chrono::milliseconds(600));
+    if (newPresses & (1 << 1)) { // Bit 1: ENGINE
+        engineHoldUntil_ = triggerPulse(std::chrono::milliseconds(800));
     }
-    if (newPresses & (1 << 2)) { // Bit 2: LIGHTS -> 180ms pulse
-        lightsPulseUntil_ = pressKey(2, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 2)) { // Bit 2: LIGHTS
+        lightsPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 3)) { // Bit 3: HAZARD -> 180ms pulse
-        hazardHoldUntil_ = pressKey(3, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 3)) { // Bit 3: HAZARD
+        hazardHoldUntil_ = triggerPulse(std::chrono::milliseconds(200));
     }
-    if (newPresses & (1 << 4)) { // Bit 4: LEFT TURN -> 180ms pulse
-        leftTurnPulseUntil_ = pressKey(4, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 4)) { // Bit 4: LEFT TURN
+        leftTurnPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 5)) { // Bit 5: RIGHT TURN -> 180ms pulse
-        rightTurnPulseUntil_ = pressKey(5, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 5)) { // Bit 5: RIGHT TURN
+        rightTurnPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 6)) { // Bit 6: PARK BRK -> 300ms hold
-        parkHoldUntil_ = pressKey(6, std::chrono::milliseconds(300));
+    if (newPresses & (1 << 6)) { // Bit 6: PARK BRK
+        parkHoldUntil_ = triggerPulse(std::chrono::milliseconds(300));
     }
-    if (newPresses & (1 << 7)) { // Bit 7: EXHAUST -> 180ms pulse
-        exhaustPulseUntil_ = pressKey(7, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 7)) { // Bit 7: EXHAUST / RETARDER
+        exhaustPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 8)) { // Bit 8: MAP / ADVISOR -> 180ms pulse
-        mapPulseUntil_ = pressKey(8, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 8)) { // Bit 8: MAP / ADVISOR
+        mapPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 9)) { // Bit 9: PAUSE / CRUISE -> 250ms hold
-        cruiseHoldUntil_ = pressKey(9, std::chrono::milliseconds(250));
+    if (newPresses & (1 << 9)) { // Bit 9: PAUSE / CRUISE
+        cruiseHoldUntil_ = triggerPulse(std::chrono::milliseconds(250));
     }
-    if (newPresses & (1 << 10)) { // Bit 10: GEAR UP -> 180ms pulse
-        gearUpPulseUntil_ = pressKey(10, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 10)) { // Bit 10: GEAR UP
+        gearUpPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 11)) { // Bit 11: GEAR DOWN -> 180ms pulse
-        gearDownPulseUntil_ = pressKey(11, std::chrono::milliseconds(180));
+    if (newPresses & (1 << 11)) { // Bit 11: GEAR DOWN
+        gearDownPulseUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
-    if (newPresses & (1 << 12)) { // Bit 12: WIPERS -> 150ms pulse
-        wiperPulseUntil_ = pressKey(12, std::chrono::milliseconds(150));
+    if (newPresses & (1 << 12)) { // Bit 12: WIPERS
+        wiperPulseUntil_ = triggerPulse(std::chrono::milliseconds(150));
     }
-    if (newPresses & (1 << 13)) { // Bit 13: CAMERA -> 150ms pulse
-        camPulseUntil_ = pressKey(13, std::chrono::milliseconds(150));
+    if (newPresses & (1 << 13)) { // Bit 13: CAMERA
+        camPulseUntil_ = triggerPulse(std::chrono::milliseconds(150));
     }
-    if (newFlags & (1 << 1)) { // Flags Bit 1: NEUTRAL -> 180ms pulse
-        neutralHoldUntil_ = pressKey(14, std::chrono::milliseconds(180));
+    if (newFlags & (1 << 1)) { // Flags Bit 1: NEUTRAL
+        neutralHoldUntil_ = triggerPulse(std::chrono::milliseconds(180));
     }
 
     // Build Xbox buttons report matching ETS2's exact factory default controller layout
     report_.wButtons = 0;
 
-    // Bit 0: HORN / OK -> Joy Right Thumb (R3) for horn + Joy (A) for menus
+    // Bit 0: HORN -> Joy Right Thumb (R3) while held (No Joy A contention!)
     if ((buttons & (1 << 0)) || (now < hornPulseUntil_)) {
-        report_.wButtons |= (XUSB_GAMEPAD_RIGHT_THUMB | XUSB_GAMEPAD_A);
+        report_.wButtons |= XUSB_GAMEPAD_RIGHT_THUMB;
     }
 
     // Bit 1: ENGINE -> ETS2 Joy D-Pad Right (Hold)
@@ -272,12 +206,12 @@ void VirtualGamepad::update(float steering, float throttle, float brake, uint16_
         report_.wButtons |= XUSB_GAMEPAD_DPAD_RIGHT;
     }
 
-    // Bit 2: LIGHTS -> ETS2 Joy (X) (cycles parking lights / low beam / off)
+    // Bit 2: LIGHTS -> ETS2 Joy (X)
     if ((buttons & (1 << 2)) || (now < lightsPulseUntil_)) {
         report_.wButtons |= XUSB_GAMEPAD_X;
     }
 
-    // Bit 3: HAZARD -> ETS2 Joy Back (Hold)
+    // Bit 3: HAZARD -> ETS2 Joy Back
     if ((buttons & (1 << 3)) || (now < hazardHoldUntil_)) {
         report_.wButtons |= XUSB_GAMEPAD_BACK;
     }
@@ -309,22 +243,19 @@ void VirtualGamepad::update(float steering, float throttle, float brake, uint16_
         report_.wButtons |= XUSB_GAMEPAD_Y;
     }
 
-    // Bit 9: CRUISE CONTROL -> Joy (B) (Hold)
+    // Bit 9: CRUISE CONTROL -> Joy (B)
     if ((buttons & (1 << 9)) || (now < cruiseHoldUntil_)) {
         report_.wButtons |= XUSB_GAMEPAD_B;
     }
 
-    // Bit 10: GEAR UP -> Joy Right Bumper (RB) + ETS2 default modifier combo (LB + RS Up)
+    // Bit 10: GEAR UP -> Joy Right Shoulder (RB) - Pure bumper pulse, ZERO sThumbRY
     if ((buttons & (1 << 10)) || (now < gearUpPulseUntil_)) {
         report_.wButtons |= XUSB_GAMEPAD_RIGHT_SHOULDER;
-        report_.wButtons |= XUSB_GAMEPAD_LEFT_SHOULDER;
-        report_.sThumbRY = 32767;
     }
 
-    // Bit 11: GEAR DOWN -> Joy Left Bumper (LB) + ETS2 default modifier combo (LB + RS Down)
+    // Bit 11: GEAR DOWN -> Joy Left Shoulder (LB) - Pure bumper pulse, ZERO sThumbRY
     if ((buttons & (1 << 11)) || (now < gearDownPulseUntil_)) {
         report_.wButtons |= XUSB_GAMEPAD_LEFT_SHOULDER;
-        report_.sThumbRY = -32768;
     }
 
     // Flags Bit 1: NEUTRAL -> Joy (Y)
