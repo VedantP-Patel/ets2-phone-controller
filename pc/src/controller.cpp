@@ -151,8 +151,12 @@ void VirtualGamepad::update(float steering, float throttle, float brake, uint16_
     if (buttons & (1 << 13)) xbtns |= XUSB_GAMEPAD_DPAD_UP;        // Bit 13: Camera Cycle
 
     (void)buttons;
-    (void)flags;
-    report_.wButtons = 0;
+    // Flags Bit 1: Shift To Neutral -> ETS2 Default Secondary is "Joy LB + Joy RB (Hold)"
+    if (flags & (1 << 1)) {
+        report_.wButtons = XUSB_GAMEPAD_LEFT_SHOULDER | XUSB_GAMEPAD_RIGHT_SHOULDER;
+    } else {
+        report_.wButtons = 0;
+    }
 
     // Direct kernel IOCTL update
     vigem_target_x360_update(client_, target_, report_);

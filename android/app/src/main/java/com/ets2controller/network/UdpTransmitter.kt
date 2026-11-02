@@ -51,7 +51,9 @@ class UdpTransmitter {
         synchronized(buttonLock) {
             if (isPressed) {
                 rawButtons = rawButtons or (1L shl bitIndex)
-                buttonHoldUntil[bitIndex] = now + 150L
+                // Give Air Horn (bit 23) and Neutral (bit 17) a 600ms hold window if tapped/swiped
+                val holdMs = if (bitIndex == 23 || bitIndex == 17) 600L else 150L
+                buttonHoldUntil[bitIndex] = now + holdMs
             } else {
                 rawButtons = rawButtons and (1L shl bitIndex).inv()
             }

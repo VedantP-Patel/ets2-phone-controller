@@ -237,7 +237,11 @@ class MainActivity : ComponentActivity() {
         try {
             steeringManager.isHapticVibrating = true
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                vibrator?.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))
+                try {
+                    vibrator?.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))
+                } catch (_: Exception) {
+                    vibrator?.vibrate(VibrationEffect.createOneShot(10L, VibrationEffect.DEFAULT_AMPLITUDE))
+                }
             } else {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(10)

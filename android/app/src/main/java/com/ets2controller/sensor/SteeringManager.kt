@@ -94,14 +94,26 @@ class SteeringManager(context: Context) : SensorEventListener {
             val handler = Handler(thread.looper)
             sensorHandler = handler
 
-            gravitySensor?.let {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler)
+            gravitySensor?.let { sensor ->
+                try {
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                } catch (_: SecurityException) {
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME, handler)
+                }
             }
             if (hasHardwareGyro && gyroSensor != null) {
-                sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                try {
+                    sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                } catch (_: SecurityException) {
+                    sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME, handler)
+                }
             } else {
-                rotationSensor?.let {
-                    sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                rotationSensor?.let { sensor ->
+                    try {
+                        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                    } catch (_: SecurityException) {
+                        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME, handler)
+                    }
                 }
             }
         }

@@ -175,7 +175,7 @@ namespace {
 
 int main() {
     SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
-
+    
     // Boost timer resolution to 1ms
     timeBeginPeriod(1);
 
@@ -484,18 +484,15 @@ int main() {
             injectKeyPulse(VK_LCONTROL, 0x1D, false, 150);
             std::cout << "[TRANSMISSION] Shift Down ('Ctrl' / Joy LB)" << std::endl;
         }
-        // Flags Bit 1: Smart Neutral
+        // Flags Bit 1: Native ETS2 Shift To Neutral ("Joy LB + Joy RB (Hold)")
+        static auto s_neutralHoldUntil = std::chrono::steady_clock::now();
         if (newFlags & (1 << 1)) {
-            int curGear = g_currentTruckGear.load();
-            if (curGear < 0) {
-                injectKeyPulse(VK_LSHIFT, 0x2A, false, 120);
-                std::cout << "[TRANSMISSION] Smart Neutral from Reverse ('Left Shift')" << std::endl;
-            } else if (curGear > 0) {
-                injectKeyPulse(VK_LCONTROL, 0x1D, false, 120);
-                std::cout << "[TRANSMISSION] Smart Neutral from Forward ('Left Ctrl')" << std::endl;
-            } else {
-                std::cout << "[TRANSMISSION] Already in Neutral" << std::endl;
-            }
+            s_neutralHoldUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(550);
+            std::cout << "[TRANSMISSION] Shift To Neutral (Hold Joy LB + Joy RB)" << std::endl;
+        }
+        if (std::chrono::steady_clock::now() < s_neutralHoldUntil) {
+            state.flags |= (1 << 1);
+            g_latestState.flags |= (1 << 1);
         }
 
         // 13. In-Game Radio Hotkeys
