@@ -26,6 +26,8 @@ class HapticReceiver(private val context: Context) {
     private var prevGear = 0
     private var prevParkBrake = false
     private var prevBlinkerCycle = false
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val clearVibrationRunnable = Runnable { onVibrationActive?.invoke(false) }
 
     private val vibrator: Vibrator? by lazy {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -207,6 +209,7 @@ class HapticReceiver(private val context: Context) {
         val durationMs = 80L
 
         try {
+            mainHandler.removeCallbacks(clearVibrationRunnable)
             onVibrationActive?.invoke(true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val effect = VibrationEffect.createOneShot(durationMs, amplitude)
@@ -215,9 +218,8 @@ class HapticReceiver(private val context: Context) {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(durationMs)
             }
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                onVibrationActive?.invoke(false)
-            }, durationMs + 20L)
+            // Keep gravity filter locked for 45ms after motor stops to let physical phone resonance settle
+            mainHandler.postDelayed(clearVibrationRunnable, durationMs + 45L)
         } catch (_: Exception) {
             onVibrationActive?.invoke(false)
         }

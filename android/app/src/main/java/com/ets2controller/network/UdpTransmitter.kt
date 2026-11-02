@@ -18,6 +18,7 @@ class UdpTransmitter {
 
     private var sequenceId: Short = 0
     private val packetBuffer = ByteArray(12)
+    private val reusablePacket = DatagramPacket(packetBuffer, packetBuffer.size)
     private val byteBuffer = ByteBuffer.wrap(packetBuffer).order(ByteOrder.LITTLE_ENDIAN)
     private val seqTimestamps = LongArray(1024)
 
@@ -79,7 +80,11 @@ class UdpTransmitter {
         try {
             targetPort = port
             targetAddress = InetAddress.getByName(ip)
-            socket = DatagramSocket()
+            reusablePacket.address = targetAddress
+            reusablePacket.port = port
+            socket = DatagramSocket().apply {
+                trafficClass = 0x10 // IPTOS_LOWDELAY: tells Wi-Fi router not to buffer packets
+            }
             isRunning.set(true)
 
             // Dedicated transmission loop running at ~100Hz (every 10ms)
@@ -101,7 +106,7 @@ class UdpTransmitter {
                     }
 
                     val elapsed = now - loopStart
-                    val sleepMs = 10L - elapsed
+                    val sleepMs = 8L - elapsed
                     if (sleepMs > 0) {
                         try {
                             Thread.sleep(sleepMs)
@@ -184,8 +189,7 @@ class UdpTransmitter {
         }
 
         try {
-            val packet = DatagramPacket(packetBuffer, packetBuffer.size, addr, targetPort)
-            sock.send(packet)
+            sock.send(reusablePacket)
         } catch (_: Exception) {
             // UDP send dropped, non-fatal
         }

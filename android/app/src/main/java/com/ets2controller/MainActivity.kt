@@ -31,8 +31,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioSynthesizer: com.ets2controller.audio.CockpitAudioSynthesizer
 
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var vibrator: Vibrator? = null
+    private var uiPollThread: Thread? = null
+    @Volatile private var isUiPolling = false
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val clearMicroHapticRunnable = Runnable { steeringManager.isHapticVibrating = false }
 
     private var localLeftBlinker = false
     private var localRightBlinker = false
@@ -62,6 +67,19 @@ class MainActivity : ComponentActivity() {
         try {
             multicastLock = wifiManager?.createMulticastLock("ETS2ControllerMulticastLock")?.apply {
                 setReferenceCounted(true)
+                acquire()
+            }
+        } catch (_: Exception) {}
+
+        try {
+            val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wifiManager?.createWifiLock(lockMode, "ETS2Controller:LowLatencyWifiLock")?.apply {
+                setReferenceCounted(false)
                 acquire()
             }
         } catch (_: Exception) {}
@@ -119,9 +137,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Initialize auto-discovery beacon listener
+        // Initialize auto-discovery beacon listener (auto-switches if PC IP changed!)
         beaconReceiver = BeaconReceiver(this) { discoveredIp ->
-            if (!isConnectedState) {
+            if (!isConnectedState || connectedIpState != discoveredIp) {
                 runOnUiThread {
                     connectToServer(discoveredIp, activeSettings.serverPort)
                 }
@@ -185,6 +203,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onAirHornBlast = {
                         audioSynthesizer.playAirHornBlast()
+                    },
+                    onLookXChange = { lookX ->
+                        udpTransmitter.currentLookX = lookX
                     }
                 )
             }
@@ -201,9 +222,8 @@ class MainActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(10)
             }
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                steeringManager.isHapticVibrating = false
-            }, 40L)
+            mainHandler.removeCallbacks(clearMicroHapticRunnable)
+            mainHandler.postDelayed(clearMicroHapticRunnable, 45L)
         } catch (_: Exception) {
             steeringManager.isHapticVibrating = false
         }
@@ -225,32 +245,45 @@ class MainActivity : ComponentActivity() {
             connectToServer(activeSettings.serverIp, activeSettings.serverPort)
         }
 
-        // Sensor polling loop to update transmitter and UI state
-        val sensorPollThread = Thread({
-            while (!isFinishing) {
+        isUiPolling = true
+        uiPollThread = Thread({
+            var tick = 0
+            while (isUiPolling && !isFinishing) {
+                // Feed UDP transmitter at 200Hz (every 5ms) with zero UI overhead
                 val steer = steeringManager.normalizedSteering
-                val rawDeg = steeringManager.rawAngleDeg
-
                 udpTransmitter.currentSteering = steer
-                currentSteerState = steer
-                rawAngleState = rawDeg
-                buttonMaskState = udpTransmitter.getEffectiveButtons()
-                ppsState = udpTransmitter.packetsSentPerSec
+
+                // Update Compose UI states every 3rd tick (~60Hz) to prevent UI thread lag
+                tick++
+                if (tick % 3 == 0) {
+                    val rawDeg = steeringManager.rawAngleDeg
+                    val mask = udpTransmitter.getEffectiveButtons()
+                    val pps = udpTransmitter.packetsSentPerSec
+                    runOnUiThread {
+                        currentSteerState = steer
+                        rawAngleState = rawDeg
+                        buttonMaskState = mask
+                        ppsState = pps
+                    }
+                }
 
                 try {
-                    Thread.sleep(10) // 100Hz
+                    Thread.sleep(5)
                 } catch (_: InterruptedException) {
                     break
                 }
             }
         }, "SensorPollThread").apply {
-            priority = Thread.NORM_PRIORITY
+            priority = Thread.MAX_PRIORITY
             start()
         }
     }
 
     override fun onPause() {
         super.onPause()
+        isUiPolling = false
+        uiPollThread?.interrupt()
+        uiPollThread = null
         steeringManager.stop()
         beaconReceiver.stopListening()
         hapticReceiver.stopListening()
@@ -260,10 +293,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isUiPolling = false
+        uiPollThread?.interrupt()
         udpTransmitter.disconnect()
         hapticReceiver.stopListening()
         try {
             if (multicastLock?.isHeld == true) multicastLock?.release()
+            if (wifiLock?.isHeld == true) wifiLock?.release()
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) {}
     }

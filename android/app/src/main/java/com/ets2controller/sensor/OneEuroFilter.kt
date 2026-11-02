@@ -41,21 +41,22 @@ class OneEuroFilter(
     private var hasLastTime: Boolean = false
 
     fun updateParameters(mincutoff: Float, beta: Float) {
-        // Keep floor high enough to prevent sluggish highway lag
-        this.mincutoff = mincutoff.coerceAtLeast(1.2f)
-        this.beta = beta.coerceAtLeast(0.02f)
+        this.mincutoff = mincutoff.coerceIn(0.5f, 10.0f)
+        this.beta = beta.coerceIn(0.005f, 0.5f)
     }
 
     private fun computeAlpha(cutoff: Float): Float {
-        val te = 1.0f / freq.coerceIn(20.0f, 250.0f)
+        val te = 1.0f / freq.coerceIn(20.0f, 500.0f)
         val tau = 1.0f / (2.0f * PI.toFloat() * cutoff.coerceAtLeast(0.1f))
         return 1.0f / (1.0f + tau / te)
     }
 
     fun filter(x: Float, timestampSec: Double): Float {
         if (hasLastTime) {
-            val elapsed = (timestampSec - lastTime).coerceIn(0.002, 0.05)
-            freq = (1.0 / elapsed).toFloat()
+            val elapsed = (timestampSec - lastTime).coerceIn(0.001, 0.05)
+            // Smooth frequency estimate so OS scheduling jitter doesn't spike rawDx
+            val instantFreq = (1.0 / elapsed).toFloat()
+            freq = 0.8f * freq + 0.2f * instantFreq
         }
         lastTime = timestampSec
         hasLastTime = true

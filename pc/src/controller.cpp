@@ -134,8 +134,22 @@ void VirtualGamepad::update(float steering, float throttle, float brake, uint16_
     int brakeInt = static_cast<int>(brake * 255.0f);
     report_.bLeftTrigger = static_cast<BYTE>(std::clamp(brakeInt, 0, 255));
 
-    // Keep wButtons = 0 so ViGEm Xbox buttons NEVER double-toggle or conflict
-    // with the DirectInput hardware scan codes dispatched by main.cpp!
+    // Map phone button bits to Xbox 360 XUSB_GAMEPAD buttons
+    USHORT xbtns = 0;
+    if (buttons & (1 << 0))  xbtns |= XUSB_GAMEPAD_RIGHT_THUMB;    // Bit 0: Horn (Joy R3)
+    if (buttons & (1 << 1))  xbtns |= XUSB_GAMEPAD_START;          // Bit 1: Engine
+    if (buttons & (1 << 2))  xbtns |= XUSB_GAMEPAD_X;              // Bit 2: Lights (Joy X)
+    if (buttons & (1 << 3))  xbtns |= XUSB_GAMEPAD_BACK;           // Bit 3: Hazard (Joy Back)
+    if (buttons & (1 << 4))  xbtns |= XUSB_GAMEPAD_DPAD_LEFT;      // Bit 4: Left Turn
+    if (buttons & (1 << 5))  xbtns |= XUSB_GAMEPAD_DPAD_RIGHT;     // Bit 5: Right Turn
+    if (buttons & (1 << 6))  xbtns |= XUSB_GAMEPAD_DPAD_DOWN;      // Bit 6: Park Brake
+    if (buttons & (1 << 7))  xbtns |= XUSB_GAMEPAD_LEFT_THUMB;     // Bit 7: Retarder (Joy L3)
+    if (buttons & (1 << 8))  xbtns |= XUSB_GAMEPAD_Y;              // Bit 8: Map / Advisor (Joy Y)
+    if (buttons & (1 << 9))  xbtns |= XUSB_GAMEPAD_B;              // Bit 9: Cruise (Joy B)
+    if (buttons & (1 << 10)) xbtns |= XUSB_GAMEPAD_RIGHT_SHOULDER; // Bit 10: Shift Up (Joy RB)
+    if (buttons & (1 << 11)) xbtns |= XUSB_GAMEPAD_LEFT_SHOULDER;  // Bit 11: Shift Down (Joy LB)
+    if (buttons & (1 << 13)) xbtns |= XUSB_GAMEPAD_DPAD_UP;        // Bit 13: Camera Cycle
+
     (void)buttons;
     (void)flags;
     report_.wButtons = 0;

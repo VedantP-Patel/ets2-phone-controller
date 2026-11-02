@@ -4,13 +4,13 @@ import android.content.Context
 import android.content.SharedPreferences
 
 data class ControllerSettings(
-    val serverIp: String = "10.196.227.236",
+    val serverIp: String = "",
     val serverPort: Int = 5005,
     val steeringDeadzoneDeg: Float = 0.5f,
     val steeringMaxAngleDeg: Float = 45.0f,
     val steeringCurvePower: Float = 1.0f,
-    val filterMinCutoff: Float = 0.6f,
-    val filterBeta: Float = 0.008f,
+    val filterMinCutoff: Float = 1.2f,
+    val filterBeta: Float = 0.06f,
     val invertSteering: Boolean = false,
     val wheelMode1to1: Boolean = false,
     val wheelDegreesRange: Float = 900.0f,
@@ -32,14 +32,13 @@ class SettingsRepository(context: Context) {
         context.getSharedPreferences("ets2_controller_prefs", Context.MODE_PRIVATE)
 
     fun loadSettings(): ControllerSettings {
-        val savedIp = prefs.getString("server_ip", "") ?: ""
-        val effectiveIp = if (savedIp.isNotEmpty()) savedIp else "10.196.227.236"
+        val effectiveIp = prefs.getString("server_ip", "") ?: ""
 
-        val savedBeta = prefs.getFloat("beta", 0.008f)
-        val effectiveBeta = if (savedBeta > 0.05f || savedBeta < 0.001f) 0.008f else savedBeta
+        val savedBeta = prefs.getFloat("beta", 0.06f)
+        val effectiveBeta = savedBeta.coerceIn(0.02f, 0.25f)
 
-        val savedMinCutoff = prefs.getFloat("min_cutoff", 0.6f)
-        val effectiveMinCutoff = if (savedMinCutoff >= 0.95f) 0.6f else savedMinCutoff
+        val savedMinCutoff = prefs.getFloat("min_cutoff", 1.2f)
+        val effectiveMinCutoff = savedMinCutoff.coerceIn(0.4f, 2.5f)
 
         val savedDz = prefs.getFloat("deadzone", 0.5f)
         val effectiveDz = if (savedDz >= 2.9f && savedDz <= 3.1f) 0.5f else savedDz

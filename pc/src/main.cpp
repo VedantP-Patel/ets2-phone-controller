@@ -6,6 +6,7 @@
 #include <mutex>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -92,16 +93,19 @@ namespace {
         std::thread([finalScan, extended, holdMs]() {
             INPUT ipDown = {};
             ipDown.type = INPUT_KEYBOARD;
-            ipDown.ki.wVk = 0; // Must be 0 when using KEYEVENTF_SCANCODE
+            ipDown.ki.wVk = 0; // MUST be 0 when using KEYEVENTF_SCANCODE
             ipDown.ki.wScan = finalScan;
             ipDown.ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-            SendInput(1, &ipDown, sizeof(INPUT));
+            UINT sent = SendInput(1, &ipDown, sizeof(INPUT));
+            if (sent == 0) {
+                std::cerr << "[WARN] SendInput blocked by Windows! Run server as Administrator." << std::endl;
+            }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
 
             INPUT ipUp = {};
             ipUp.type = INPUT_KEYBOARD;
-            ipUp.ki.wVk = 0;
+            ipUp.ki.wVk = 0; // MUST be 0 when using KEYEVENTF_SCANCODE
             ipUp.ki.wScan = finalScan;
             ipUp.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
             SendInput(1, &ipUp, sizeof(INPUT));
@@ -113,7 +117,7 @@ namespace {
         WORD finalScan = scanCode ? scanCode : (WORD)MapVirtualKeyA(vKey, MAPVK_VK_TO_VSC);
         INPUT ip = {};
         ip.type = INPUT_KEYBOARD;
-        ip.ki.wVk = 0;
+        ip.ki.wVk = 0; // MUST be 0 when using KEYEVENTF_SCANCODE
         ip.ki.wScan = finalScan;
         ip.ki.dwFlags = KEYEVENTF_SCANCODE | (isPressed ? 0 : KEYEVENTF_KEYUP) | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
         SendInput(1, &ip, sizeof(INPUT));
@@ -217,9 +221,14 @@ int main() {
     int rcvBufSize = 131072; // 128 KB
     setsockopt(dataSocket, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&rcvBufSize), sizeof(rcvBufSize));
 
-    // Non-blocking socket mode with brief poll
-    DWORD timeoutMs = 200;
+    // Set 2ms socket timeout so the main loop runs at ~250-500Hz even between Wi-Fi packets
+    DWORD timeoutMs = 2;
     setsockopt(dataSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&timeoutMs), sizeof(timeoutMs));
+
+    // Disable UDP CONNRESET bug on Windows (prevents recvfrom failing if phone port closes briefly)
+    BOOL bNewBehavior = FALSE;
+    DWORD dwBytesReturned = 0;
+    WSAIoctl(dataSocket, _WSAIOW(IOC_VENDOR, 12), &bNewBehavior, sizeof(bNewBehavior), NULL, 0, &dwBytesReturned, NULL, NULL);
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
@@ -280,30 +289,60 @@ int main() {
     uint32_t packetCount = 0;
     bool clientConnectedMessage = false;
 
+    LARGE_INTEGER lastLoopTime;
+    QueryPerformanceCounter(&lastLoopTime);
+    float targetSteer = 0.0f;
+    float currentSteer = 0.0f;
+    bool hasInitialSteer = false;
+
     // Main ultra-low-latency input loop
     while (g_running) {
-        int bytesReceived = recvfrom(dataSocket, reinterpret_cast<char*>(buffer), sizeof(buffer), 0,
-                                     reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
+        ControllerState state{};
+        bool gotNewPacket = false;
 
-        if (bytesReceived <= 0) {
-            continue; // Timeout or no data, loop again
-        }
+        // Drain socket queue so we always use the freshest packet if a Wi-Fi burst arrives
+        while (true) {
+            int r = recvfrom(dataSocket, reinterpret_cast<char*>(buffer), sizeof(buffer), 0,
+                             reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
+            if (r <= 0) break;
 
-        ControllerState state;
-        if (!decodeControllerPacket(buffer, bytesReceived, &state)) {
-            continue; // Ignore corrupted packet
-        }
-
-        // Drop out-of-order or duplicate stale packets
-        if (hasLastSeq) {
-            int16_t diff = static_cast<int16_t>(state.sequenceId - lastSeq);
-            if (diff <= 0 && diff > -30000) {
-                continue;
+            ControllerState tempState;
+            if (decodeControllerPacket(buffer, r, &tempState)) {
+                if (hasLastSeq) {
+                    int16_t diff = static_cast<int16_t>(tempState.sequenceId - lastSeq);
+                    if (diff <= 0 && diff > -30000) continue;
+                }
+                lastSeq = tempState.sequenceId;
+                hasLastSeq = true;
+                uint16_t mergedBtns = gotNewPacket ? (state.buttons | tempState.buttons) : tempState.buttons;
+                uint8_t mergedFlags = gotNewPacket ? (state.flags | tempState.flags) : tempState.flags;
+                state = tempState;
+                state.buttons = mergedBtns;
+                state.flags = mergedFlags;
+                gotNewPacket = true;
+                packetCount++;
             }
+            u_long avail = 0;
+            ioctlsocket(dataSocket, FIONREAD, &avail);
+            if (avail == 0) break;
         }
-        lastSeq = state.sequenceId;
-        hasLastSeq = true;
-        packetCount++;
+
+        // Always step steering interpolation every 2ms even if no UDP packet arrived this tick
+        QueryPerformanceCounter(&now);
+        float dt = static_cast<float>(now.QuadPart - lastLoopTime.QuadPart) / static_cast<float>(perfFreq.QuadPart);
+        lastLoopTime = now;
+        dt = std::clamp(dt, 0.0005f, 0.05f);
+
+        if (!gotNewPacket) {
+            if (hasInitialSteer) {
+                float delta = targetSteer - currentSteer;
+                float speedRate = 140.0f + std::abs(delta) * 260.0f;
+                currentSteer += delta * (1.0f - std::exp(-speedRate * dt));
+                gamepad.update(currentSteer, g_latestState.throttle, g_latestState.brake,
+                               g_latestState.buttons, g_latestState.flags, g_latestState.lookX);
+            }
+            continue;
+        }
 
         // Track connected client for reverse rumble & telemetry packets
         {
@@ -327,29 +366,16 @@ int main() {
             clientConnectedMessage = true;
         }
 
-        // Improved Steering Pipeline:
-        // 1. Subtle non-linear curve (15% cubic blend) for fine highway center precision
-        //    without sacrificing 1:1 linear feel across the rest of the rotation range.
-        float rawSteer = std::clamp(state.steering, -1.0f, 1.0f);
-        constexpr float NON_LINEARITY = 0.15f; // 0.0 = pure linear, 0.3 = softer center
-        float shapedSteer = (1.0f - NON_LINEARITY) * rawSteer + NON_LINEARITY * (rawSteer * rawSteer * rawSteer);
-
-        // 2. Speed-adaptive smoothing: smooths micro-jitter near center,
-        //    but opens up instantly during fast counter-steering or tight maneuvers.
-        static float s_smoothedSteering = 0.0f;
-        static bool s_hasSteerInit = false;
-        if (!s_hasSteerInit) {
-            s_smoothedSteering = shapedSteer;
-            s_hasSteerInit = true;
+       targetSteer = std::clamp(state.steering, -1.0f, 1.0f);
+        if (!hasInitialSteer) {
+            currentSteer = targetSteer;
+            hasInitialSteer = true;
         } else {
-            float delta = shapedSteer - s_smoothedSteering;
-            float absDelta = std::abs(delta);
-            // Dynamic alpha: 0.45 for tiny micro-movements, scaling up to 0.90 for fast turns
-            float alpha = std::clamp(0.45f + absDelta * 3.0f, 0.45f, 0.90f);
-            s_smoothedSteering += delta * alpha;
+            float delta = targetSteer - currentSteer;
+            float speedRate = 140.0f + std::abs(delta) * 260.0f;
+            currentSteer += delta * (1.0f - std::exp(-speedRate * dt));
         }
-        // Update virtual Xbox 360 controller with steering, pedals, and right-stick camera look
-        gamepad.update(s_smoothedSteering, state.throttle, state.brake, state.buttons, state.flags, state.lookX);
+        gamepad.update(currentSteer, state.throttle, state.brake, state.buttons, state.flags, state.lookX);
 
         // Auto-center interior camera ('1') when releasing finger after looking left/right
         static bool s_wasLooking = false;
@@ -506,67 +532,67 @@ int main() {
         s_prevExtCmdId = extCmdId;
 
         switch (newExtCmd) {
-            case 1: // Bit 18: Diff Lock ('V' scan 0x2F - Factory Default)
+            case 1: // Bit 18: Diff Lock ('V' scan 0x2F)
                 injectKeyPulse('V', 0x2F, false, 120);
                 std::cout << "[DIFF LOCK] Toggled ('V')" << std::endl;
                 break;
-            case 2: // Bit 19: Lift Axle ('U' scan 0x16 - Factory Default)
+            case 2: // Bit 19: Lift Axle ('U' scan 0x16)
                 injectKeyPulse('U', 0x16, false, 120);
                 std::cout << "[LIFT AXLE] Toggled ('U')" << std::endl;
                 break;
-            case 3: // Bit 20: Trailer Hook ('T' scan 0x14 - Factory Default)
+            case 3: // Bit 20: Trailer Hook ('T' scan 0x14)
                 injectKeyPulse('T', 0x14, false, 180);
                 std::cout << "[TRAILER] Hook / Decouple ('T')" << std::endl;
                 break;
-            case 4: // Bit 21: High Beams ('K' scan 0x25 - Factory Default)
+            case 4: // Bit 21: High Beams ('K' scan 0x25)
                 injectKeyPulse('K', 0x25, false, 120);
                 std::cout << "[HIGH BEAMS] Toggled ('K')" << std::endl;
                 break;
-            case 5: // Bit 22: Beacons ('O' scan 0x18 - Factory Default)
+            case 5: // Bit 22: Beacons ('O' scan 0x18)
                 injectKeyPulse('O', 0x18, false, 120);
                 std::cout << "[BEACONS] Roof Strobe ('O')" << std::endl;
                 break;
-            case 7: // Bit 24: Retarder Increase (';' scan 0x27 - Factory Default)
+            case 7: // Bit 24: Retarder Increase (';' scan 0x27)
                 injectKeyPulse(VK_OEM_1, 0x27, false, 100);
                 std::cout << "[RETARDER +] Step Up (';')" << std::endl;
                 break;
-            case 8: // Bit 25: Retarder Decrease (''' scan 0x28 - Factory Default)
+            case 8: // Bit 25: Retarder Decrease (''' scan 0x28)
                 injectKeyPulse(VK_OEM_7, 0x28, false, 100);
                 std::cout << "[RETARDER -] Step Down (''')" << std::endl;
                 break;
-            case 9: // Bit 26: Full World Map ('M' scan 0x32 - Factory Default)
-                injectKeyPulse('M', 0x32, false, 120);
-                std::cout << "[WORLD MAP] Toggle Full Map ('M')" << std::endl;
+            case 9: // Bit 26: Cruise Speed Up ('RBRACKET' / ']' scan 0x1B)
+                injectKeyPulse(VK_OEM_6, 0x1B, false, 100);
+                std::cout << "[CRUISE +] Increase Speed (']')" << std::endl;
                 break;
-            case 10: // Bit 27: Route Advisor Next Page ('F6' scan 0x40 - Factory Default)
-                injectKeyPulse(VK_F6, 0x40, false, 120);
-                std::cout << "[ADVISOR] Job Info Page ('F6')" << std::endl;
+            case 10: // Bit 27: Cruise Speed Down ('LBRACKET' / '[' scan 0x1A)
+                injectKeyPulse(VK_OEM_4, 0x1A, false, 100);
+                std::cout << "[CRUISE -] Decrease Speed ('[')" << std::endl;
                 break;
-            case 11: // Bit 28: Route Advisor Damage/Tow ('F7' scan 0x41 - Factory Default)
-                injectKeyPulse(VK_F7, 0x41, false, 120);
-                std::cout << "[ADVISOR] Damage & Tow Service ('F7')" << std::endl;
+            case 11: // Bit 28: Cruise Resume / Toggle ('C' scan 0x2E)
+                injectKeyPulse('C', 0x2E, false, 150);
+                std::cout << "[CRUISE RESUME] Toggle ('C')" << std::endl;
                 break;
-            case 12: // Bit 29: Dashboard Info Computer ('I' scan 0x17 - Factory Default)
+            case 12: // Bit 29: Dashboard Info Computer ('I' scan 0x17)
                 injectKeyPulse('I', 0x17, false, 120);
                 std::cout << "[DASH DISPLAY] Cycle Truck Info ('I')" << std::endl;
                 break;
-            case 13: // Bit 30: Enter / Service Confirm (VK_RETURN scan 0x1C - Factory Default)
+            case 13: // Bit 30: Enter / Service Confirm (VK_RETURN scan 0x1C)
                 injectKeyPulse(VK_RETURN, 0x1C, false, 150);
                 std::cout << "[ENTER] Activate Gas / Toll / Ferry / Parking Prompt" << std::endl;
                 break;
-            case 14: // Bit 31: Cargo & Job Page ('F6' scan 0x40 - Factory Default)
+            case 14: // Bit 31: Route Advisor Cargo & Job Page ('F6' scan 0x40)
                 injectKeyPulse(VK_F6, 0x40, false, 120);
                 std::cout << "[JOB INFO] Route Advisor Cargo ('F6')" << std::endl;
                 break;
-            case 15: // Bit 32: Damage & Emergency Tow ('F7' scan 0x41 - Factory Default)
+            case 15: // Bit 32: Route Advisor Damage & Tow ('F7' scan 0x41)
                 injectKeyPulse(VK_F7, 0x41, false, 120);
                 std::cout << "[DAMAGE / TOW] Route Advisor Service ('F7')" << std::endl;
                 break;
-            case 16: // Bit 33: Lean Out Window Reverse Cam ('5' scan 0x06 - Factory Default)
+            case 16: // Bit 33: Lean Out Window Reverse Cam ('5' scan 0x06)
                 injectKeyPulse('5', 0x06, false, 120);
                 std::cout << "[CAMERA] Lean Out Driver Window ('5')" << std::endl;
                 break;
-            case 17: // Bit 34: Exterior Chase Cam ('2' scan 0x03 - Factory Default)
+            case 17: // Bit 34: Exterior Chase Cam ('2' scan 0x03)
                 injectKeyPulse('2', 0x03, false, 120);
                 std::cout << "[CAMERA] Exterior Chase View ('2')" << std::endl;
                 break;

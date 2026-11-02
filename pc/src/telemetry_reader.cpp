@@ -73,7 +73,7 @@ void TelemetryReader::pollTelemetry(const ControllerState& latestInput, TruckTel
         // Ensure game process is running and updating telemetry
         if (map->sdkActive) {
             outPacket->header = TELEMETRY_HEADER;
-            outPacket->speedKmh = std::max(0.0f, map->truck_f.speed * 3.6f);
+            outPacket->speedKmh = std::abs(map->truck_f.speed * 3.6f);
             outPacket->engineRpm = std::max(0.0f, map->truck_f.engineRpm);
             outPacket->maxRpm = (map->config_f.engineRpmMax > 500.0f) ? map->config_f.engineRpmMax : 2500.0f;
             outPacket->gear = static_cast<int8_t>(map->truck_i.gear);

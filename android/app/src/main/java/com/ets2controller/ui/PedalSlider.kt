@@ -49,10 +49,9 @@ fun PedalSlider(
 
     fun calculateValue(y: Float) {
         if (sliderSize.height <= 0) return
-        // Bottom is 0.0, Top is 1.0
-        val clampedY = y.coerceIn(0f, sliderSize.height.toFloat())
-        val normalized = 1.0f - (clampedY / sliderSize.height.toFloat())
-        val result = normalized.coerceIn(0.0f, 1.0f)
+        val rawNorm = 1.0f - (y / sliderSize.height.toFloat()).coerceIn(0f, 1f)
+        // 6% bottom resting deadzone + 6% top full-lock margin so 100% is easy to hold
+        val result = ((rawNorm - 0.06f) / 0.88f).coerceIn(0.0f, 1.0f)
 
         // Haptic feedback at 25%, 50%, 75%, 100%
         val step = (result * 4).toInt()
@@ -98,7 +97,8 @@ fun PedalSlider(
 
                         // Check double tap (e.g. gas double tap triggers cruise control)
                         val nowMs = System.currentTimeMillis()
-                        if (nowMs - lastTapTimeMs < 320L) {
+                        // Only trigger double-tap if tapped in the lower half of the pedal
+                        if (nowMs - lastTapTimeMs < 300L && down.position.y > sliderSize.height * 0.4f) {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onDoubleTap?.invoke()
                             lastTapTimeMs = 0L
