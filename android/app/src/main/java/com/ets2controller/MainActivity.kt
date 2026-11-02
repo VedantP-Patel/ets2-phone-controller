@@ -210,6 +210,26 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+
+        // Immersive cockpit mode: applied after the decor view is attached
+        window.decorView.post {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.insetsController?.let { controller ->
+                        controller.hide(android.view.WindowInsets.Type.systemBars())
+                        controller.systemBarsBehavior =
+                            android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    window.decorView.systemUiVisibility = (
+                        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                    )
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun triggerMicroHaptic() {

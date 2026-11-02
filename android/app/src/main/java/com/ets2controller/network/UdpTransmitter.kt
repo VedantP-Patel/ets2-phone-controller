@@ -76,19 +76,17 @@ class UdpTransmitter {
     }
 
     fun connect(ip: String, port: Int) {
+        if (ip.isBlank()) return
         disconnect()
-        try {
-            targetPort = port
-            targetAddress = InetAddress.getByName(ip)
-            reusablePacket.address = targetAddress
-            reusablePacket.port = port
-            socket = DatagramSocket().apply {
-                trafficClass = 0x10 // IPTOS_LOWDELAY: tells Wi-Fi router not to buffer packets
-            }
-            isRunning.set(true)
+        targetPort = port
+        isRunning.set(true)
 
-            // Dedicated transmission loop running at ~100Hz (every 10ms)
-            workerThread = Thread({
+        workerThread = Thread({
+            try {
+                targetAddress = InetAddress.getByName(ip.trim())
+                socket = DatagramSocket().apply {
+                    trafficClass = 0x10
+                }
                 var ppsCounter = 0
                 var lastStatsTime = SystemClock.elapsedRealtime()
 
@@ -115,12 +113,12 @@ class UdpTransmitter {
                         }
                     }
                 }
-            }, "UdpTransmitterThread").apply {
-                priority = Thread.MAX_PRIORITY
-                start()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        }, "UdpTransmitterThread").apply {
+            priority = Thread.MAX_PRIORITY
+            start()
         }
     }
 
@@ -189,6 +187,8 @@ class UdpTransmitter {
         }
 
         try {
+            reusablePacket.address = addr
+            reusablePacket.port = targetPort
             sock.send(reusablePacket)
         } catch (_: Exception) {
             // UDP send dropped, non-fatal

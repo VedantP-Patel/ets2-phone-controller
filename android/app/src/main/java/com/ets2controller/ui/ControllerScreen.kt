@@ -45,55 +45,86 @@ fun ControllerScreen(
     var showAuxSwitchboard by remember { mutableStateOf(false) }
     val activeAccent = getThemeAccent(settings.clusterTheme)
 
-    // Left outer button group (Zero-Stretch Edge, Fitts's Law Infinite Lateral Boundary)
+    // Left Outer Column: Left Turn Stalk, Lights (Tap=Cycle L, SwipeUp=Hi-Beam K), Horn (Hold=Horn, SwipeUp=Air Horn), Park Brake
     val leftOuterButtons = listOf(
         ActionButtonDef(bitIndex = 4, icon = "TURN_LEFT", label = "L. TURN", customColor = Color(0xFF00E676)),
-        ActionButtonDef(bitIndex = 5, icon = "TURN_RIGHT", label = "R. TURN", customColor = Color(0xFF00E676)),
-        ActionButtonDef(bitIndex = 0, icon = "🔊", label = "HORN / OK", isPrimary = true),
+        ActionButtonDef(
+            bitIndex = 2,
+            icon = "💡",
+            label = "LIGHTS ↕",
+            swipeUpBit = 21,   // Swipe Up = High Beams ('K')
+            swipeDownBit = 22  // Swipe Down = Roof Beacons ('O')
+        ),
+        ActionButtonDef(
+            bitIndex = 0,
+            icon = "🔊",
+            label = "HORN / AIR",
+            isPrimary = true,
+            swipeUpBit = 23    // Swipe Up = Roof Air Horn ('N')
+        ),
         ActionButtonDef(bitIndex = 6, icon = "🅿️", label = "PARK BRK", isWarning = true)
     )
 
-    // Left inner button group (Tactical Driving Spoke)
+    // Left Inner Column: Right Turn Stalk (beside L. TURN!), Retarder Stalk, Cruise Stalk, Engine/Enter
     val leftInnerButtons = listOf(
-        ActionButtonDef(bitIndex = 21, icon = "HIGH_BEAMS", label = "HI BEAMS", customColor = Color(0xFF2979FF)),
+        ActionButtonDef(bitIndex = 5, icon = "TURN_RIGHT", label = "R. TURN", customColor = Color(0xFF00E676)),
         ActionButtonDef(
             bitIndex = 7,
             icon = "RETARDER",
             label = "RETARDER ↕",
             customColor = Color(0xFFFF9100),
-            swipeDownBit = 24, // Swipe Down = Increase Retarder Step (;)
-            swipeUpBit = 25    // Swipe Up   = Decrease Retarder Step (')
+            swipeUpBit = 24,   // Swipe Up   = Increase Retarder (;)
+            swipeDownBit = 25  // Swipe Down = Decrease Retarder (')
         ),
-        ActionButtonDef(bitIndex = 2, icon = "💡", label = "LIGHTS"),
-        ActionButtonDef(bitIndex = 1, icon = "🔑", label = "ENGINE", isWarning = true)
-    )
-
-    // Center bottom utilities
-    val centerUtilityButtons = listOf(
         ActionButtonDef(
             bitIndex = 9,
             icon = "⏸",
             label = "CRUISE ↕",
-            swipeUpBit = 26,   // Swipe Up   = Cruise Speed +5 km/h
-            swipeDownBit = 27, // Swipe Down = Cruise Speed -5 km/h
+            customColor = Color(0xFF2979FF),
+            swipeUpBit = 26,   // Swipe Up   = Cruise +5 km/h
+            swipeDownBit = 27, // Swipe Down = Cruise -5 km/h
             longPressBit = 28  // Hold       = Cruise Resume
         ),
         ActionButtonDef(
+            bitIndex = 30,     // Primary Tap = ENTER (Gas/Toll/Ferry/Job Confirm!)
+            icon = "⏎",
+            label = "ENTER / ENG",
+            customColor = Color(0xFF00E676),
+            longPressBit = 1   // Hold 0.4s  = Start/Stop Engine ('E')
+        )
+    )
+
+    // Center Bottom Bar: Quick Utility & Camera Views (Tap=Interior Cam 1, SwipeUp=Chase Cam 2, SwipeDown=Window Peek Cam 5)
+    val centerUtilityButtons = listOf(
+        ActionButtonDef(bitIndex = 3, icon = "⚠️", label = "HAZARD", isWarning = true),
+        ActionButtonDef(
             bitIndex = 8,
             icon = "🗺",
-            label = "MAP / INFO",
-            swipeUpBit = 29,   // Swipe Up   = Dash Info Display ('I')
-            longPressBit = 30  // Hold       = Enter / Confirm Prompt (Gas/Tolls/Ferries)
+            label = "ADVISOR ↕",
+            swipeUpBit = 29,   // Swipe Up   = Dash Computer ('I')
+            swipeDownBit = 31, // Swipe Down = Job Info ('F6')
+            longPressBit = 32  // Hold       = Damage/Tow ('F7')
         ),
         ActionButtonDef(bitIndex = 12, icon = "WIPER", label = "WIPERS"),
-        ActionButtonDef(bitIndex = 13, icon = "📷", label = "CAM"),
-        ActionButtonDef(bitIndex = -2, icon = "🎛️", label = "AUX BOX", isPrimary = true)
+        ActionButtonDef(
+            bitIndex = 13,
+            icon = "📷",
+            label = "CAM ↕",
+            swipeUpBit = 34,   // Swipe Up   = Exterior Chase Cam ('2')
+            swipeDownBit = 33  // Swipe Down = Lean Out Window Reverse Cam ('5')
+        ),
+        ActionButtonDef(bitIndex = -2, icon = "🎛️", label = "SWITCHES", isPrimary = true)
     )
 
     // Transmission gear buttons (right of wheel, left of pedals)
     val gearButtons = listOf(
         ActionButtonDef(bitIndex = 10, icon = "🔼", label = "SHIFT UP", isPrimary = true),
-        ActionButtonDef(bitIndex = 17, icon = "N", label = "NEUTRAL"),
+        ActionButtonDef(
+            bitIndex = 17,
+            icon = "N",
+            label = "NEUTRAL",
+            longPressBit = 18  // Hold Neutral = Toggle Diff Lock ('V') for heavy mud/quarries!
+        ),
         ActionButtonDef(bitIndex = 11, icon = "🔽", label = "SHIFT DN", isPrimary = true)
     )
 
@@ -252,7 +283,7 @@ fun ControllerScreen(
                                         .fillMaxHeight()
                                 )
                             } else {
-                                val isPressed = (buttonMask and (1 shl btn.bitIndex)) != 0
+                                val isPressed = btn.bitIndex in 0..30 && (buttonMask and (1 shl btn.bitIndex)) != 0
                                 CockpitButton(
                                     def = btn,
                                     isPressed = isPressed,
@@ -340,7 +371,7 @@ fun ControllerScreen(
                             verticalArrangement = Arrangement.SpaceBetween
                         ) {
                             gearButtons.forEach { btn ->
-                                val isPressed = (buttonMask and (1 shl btn.bitIndex)) != 0
+                                val isPressed = btn.bitIndex in 0..30 && (buttonMask and (1 shl btn.bitIndex)) != 0
                                 CockpitButton(
                                     def = btn,
                                     isPressed = isPressed,

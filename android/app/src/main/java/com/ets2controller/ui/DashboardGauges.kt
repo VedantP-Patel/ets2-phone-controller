@@ -40,6 +40,12 @@ fun DashboardGauges(
     val speedUnit = if (useMph) "MPH" else "KM/H"
     val displaySpeedLimit = if (useMph && telemetry.speedLimitKmh > 0) (telemetry.speedLimitKmh * 0.621371f).roundToInt() else telemetry.speedLimitKmh
 
+    val displayCruise = if (useMph && telemetry.cruiseSpeedKmh > 0) (telemetry.cruiseSpeedKmh * 0.621371f).roundToInt() else telemetry.cruiseSpeedKmh
+    val isDiffLocked = (telemetry.auxStateFlags and (1 shl 0)) != 0
+    val isLiftAxle = (telemetry.auxStateFlags and (1 shl 1)) != 0
+    val isTrailerConnected = (telemetry.auxStateFlags and (1 shl 2)) != 0
+    val isHighBeam = (telemetry.auxStateFlags and (1 shl 3)) != 0
+
     val isOverspeeding = telemetry.speedLimitKmh > 0 && (telemetry.speedKmh > (telemetry.speedLimitKmh + 2.0f))
 
     // Blinker flash animation
@@ -228,12 +234,32 @@ fun DashboardGauges(
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace
                             )
-                            Text(
-                                text = "AIR: ${String.format("%.1f", airBar)} bar",
-                                color = if (telemetry.isLowAir) Color(0xFFFF5252) else Color.Gray,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (telemetry.isParkBrake) {
+                                    Text("(P)", color = Color(0xFFFF1744), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
+                                if (telemetry.isCruiseControl) {
+                                    Text("CC $displayCruise", color = Color(0xFF00E676), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
+                                if (isHighBeam) {
+                                    Text("HI", color = Color(0xFF2979FF), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
+                                if (isDiffLocked) {
+                                    Text("DIFF", color = Color(0xFFFF9100), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
+                                if (isLiftAxle) {
+                                    Text("LIFT", color = Color(0xFF00E5FF), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                }
+                                Text(
+                                    text = "⛽${telemetry.fuelPercent}% | ${String.format("%.1f", airBar)}b",
+                                    color = if (telemetry.isLowAir || telemetry.fuelPercent < 15) Color(0xFFFF5252) else Color.Gray,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
 
@@ -264,10 +290,10 @@ fun DashboardGauges(
                     // Navigation GPS
                     Column(horizontalAlignment = Alignment.Start) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("🏁", fontSize = 11.sp)
-                            Spacer(modifier = Modifier.width(3.dp))
+                            Text("NAV", color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Black)
+                            Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (telemetry.routeDistanceKm > 0) "${telemetry.routeDistanceKm} KM" else "NO ROUTE",
+                                text = if (telemetry.routeDistanceKm > 0) "${telemetry.routeDistanceKm} km" else "NO ROUTE",
                                 color = accentColor,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
@@ -276,7 +302,7 @@ fun DashboardGauges(
                         val etaHours = telemetry.routeTimeMin / 60
                         val etaMinutes = telemetry.routeTimeMin % 60
                         Text(
-                            text = if (telemetry.routeTimeMin > 0) "ETA: ${etaHours}h ${etaMinutes}m" else "Free Roam",
+                            text = if (telemetry.routeTimeMin > 0) "ETA ${etaHours}h ${etaMinutes}m" else "Free Roam",
                             color = Color.LightGray,
                             fontSize = 10.sp
                         )
@@ -285,13 +311,13 @@ fun DashboardGauges(
                     // Cruise Control Status
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = if (telemetry.isCruiseControl) "CRUISE ON" else "CRUISE OFF",
+                            text = if (telemetry.isCruiseControl) "CRUISE ACTIVE" else "CRUISE STANDBY",
                             color = if (telemetry.isCruiseControl) Color(0xFF00E676) else Color.Gray,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = if (telemetry.isCruiseControl) "${telemetry.cruiseSpeedKmh} $speedUnit" else "Double-tap Gas",
+                            text = if (telemetry.isCruiseControl) "$displayCruise $speedUnit" else "Swipe / 2x Gas",
                             color = if (telemetry.isCruiseControl) Color.White else Color.DarkGray,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Black
@@ -306,15 +332,16 @@ fun DashboardGauges(
                             else -> Color(0xFF00E676)
                         }
                         Text(
-                            text = "🔧 ${telemetry.truckDamagePct}% DMG",
+                            text = "DMG ${telemetry.truckDamagePct}%",
                             color = damageColor,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "⛽ ${telemetry.fuelPercent}% FUEL",
+                            text = "FUEL ${telemetry.fuelPercent}%",
                             color = if (telemetry.fuelPercent < 15) Color(0xFFFF5252) else Color.LightGray,
-                            fontSize = 10.sp
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }

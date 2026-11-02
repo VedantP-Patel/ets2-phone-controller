@@ -114,6 +114,48 @@ fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                // One-Tap ETS2 Physics Tuning Presets
+                Column {
+                    Text("Quick Physics Preset:", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            Triple("🛣️ Highway", "Laser-straight center", {
+                                wheelMode1to1 = true; wheelRange = 900f; deadzone = 0.4f
+                                minCutoff = 1.1f; filterBeta = 0.05f; casterSpring = 0.25f
+                                autoZeroRecenterSensitivity = 1.4f; centerSnapAssistance = true; gravityAnchorEnabled = true
+                            }),
+                            Triple("⚖️ Balanced 1:1", "True 900° simulation", {
+                                wheelMode1to1 = true; wheelRange = 900f; deadzone = 0.2f
+                                minCutoff = 1.4f; filterBeta = 0.08f; casterSpring = 0.10f
+                                autoZeroRecenterSensitivity = 1.0f; centerSnapAssistance = true; gravityAnchorEnabled = true
+                            }),
+                            Triple("🅿️ City / Yard", "Fast lock for parking", {
+                                wheelMode1to1 = true; wheelRange = 540f; deadzone = 0.0f
+                                minCutoff = 1.8f; filterBeta = 0.14f; casterSpring = 0.0f
+                                autoZeroRecenterSensitivity = 0.8f; centerSnapAssistance = false; gravityAnchorEnabled = true
+                            })
+                        ).forEach { (title, sub, applyPreset) ->
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF161A22))
+                                    .border(1.dp, activeAccent.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                    .clickable { applyPreset() }
+                                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(title, color = activeAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(sub, color = Color.Gray, fontSize = 9.sp, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+                
                 // 1:1 ETS2 Wheel Mode Toggle
                 Row(
                     modifier = Modifier.fillMaxWidth(),

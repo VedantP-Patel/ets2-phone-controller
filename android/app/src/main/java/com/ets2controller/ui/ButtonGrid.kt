@@ -314,7 +314,7 @@ fun ButtonColumn(
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         buttons.forEach { btn ->
-            val isPressed = btn.bitIndex >= 0 && (activeMask and (1 shl btn.bitIndex)) != 0
+            val isPressed = btn.bitIndex in 0..30 && (activeMask and (1 shl btn.bitIndex)) != 0
             CockpitButton(
                 def = btn,
                 isPressed = isPressed,
