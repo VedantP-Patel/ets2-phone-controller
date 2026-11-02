@@ -23,7 +23,14 @@ bool VirtualGamepad::initialize() {
     if (!VIGEM_SUCCESS(connectErr)) {
         std::cerr << "[ERROR] Failed to connect to ViGEmBus driver. Error code: 0x" 
                   << std::hex << connectErr << std::dec << std::endl;
-        std::cerr << "        Make sure ViGEmBus driver is installed and running." << std::endl;
+        std::cerr << "========================================================================\n"
+                  << "[ACTION REQUIRED] ViGEmBus Driver is NOT installed on this PC!\n"
+                  << "ETS2 Phone Controller requires ViGEmBus to emulate an Xbox 360 controller.\n\n"
+                  << "To fix this:\n"
+                  << "  1. Run 'install_vigembus.bat' in the project folder\n"
+                  << "  2. Or run in PowerShell: winget install --id ViGEm.ViGEmBus -e\n"
+                  << "  3. Or download manually: https://github.com/nefarius/ViGEmBus/releases\n"
+                  << "========================================================================\n";
         vigem_free(client_);
         client_ = nullptr;
         return false;

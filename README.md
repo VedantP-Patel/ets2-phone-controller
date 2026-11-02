@@ -9,6 +9,12 @@ Transform your Android smartphone into a **high-precision steering wheel, analog
 ## ⚡ Quick Start in 3 Steps
 
 ### Step 1: Start the PC Server
+
+> [!NOTE]
+> **First-time setup on a new PC:** Windows requires the free, open-source **ViGEmBus driver** to emulate an Xbox 360 controller.
+> - Double-click `install_vigembus.bat` (or run in PowerShell: `winget install --id ViGEm.ViGEmBus -e`).
+> - *Tip: `start.bat` will also detect if it's missing and offer to install it for you automatically!*
+
 Double-click:
 ```text
 d:\Projects\ets2-phone-controller\start.bat
