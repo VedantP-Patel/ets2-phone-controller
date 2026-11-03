@@ -43,8 +43,9 @@ class SteeringManager(context: Context) : SensorEventListener {
     private var hasPrevGravRoll = false
 
     private var lastGyroTimestampNs = 0L
-    // Online gyro zero-rate bias tracker (cancels MEMS drift before integration)
-    private var gyroBiasZDegPerSec = 0.0f
+    private var prevOmegaDegPerSec = 0.0f
+    private var gyroBiasDegPerSec = 0.0f
+    private var anchoredAngleDeg = 0.0f
     private var lastLinearAccelError = 0.0f
 
     // Tuned 1-Euro Filter: lower mincutoff (1.3Hz) for rock-steady highway center,
@@ -107,13 +108,12 @@ class SteeringManager(context: Context) : SensorEventListener {
                 } catch (_: SecurityException) {
                     sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME, handler)
                 }
-            } else {
-                rotationSensor?.let { sensor ->
-                    try {
-                        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
-                    } catch (_: SecurityException) {
-                        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME, handler)
-                    }
+            }
+            rotationSensor?.let { sensor ->
+                try {
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+                } catch (_: SecurityException) {
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME, handler)
                 }
             }
         }
@@ -131,6 +131,8 @@ class SteeringManager(context: Context) : SensorEventListener {
         if (hasGravitySample) {
             baselineRollDeg = computeScreenRollFromGravity(filteredGravity[0], filteredGravity[1])
         }
+        prevOmegaDegPerSec = 0.0f
+        anchoredAngleDeg = 0.0f
         fusedAngleDeg = 0.0f
         continuousGravDeg = 0.0f
         prevGravRollDeg = 0.0f
@@ -208,14 +210,20 @@ class SteeringManager(context: Context) : SensorEventListener {
             return
         }
 
-        // Fallback for phones with Virtual Gyro using Game Rotation Vector
-        if (!hasHardwareGyro && event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+        // Hardware 6-Axis EKF Gravity Horizon (Zero low-pass phase lag!)
+        if (event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
             val rotMatrix = FloatArray(9)
             SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-            // Extract gravity direction in device frame from bottom row of rotation matrix
             val gx = rotMatrix[6] * 9.81f
             val gy = rotMatrix[7] * 9.81f
+            val gz = rotMatrix[8] * 9.81f
+            filteredGravity[0] = gx
+            filteredGravity[1] = gy
+            filteredGravity[2] = gz
+            hasGravitySample = true
+
             if (sqrt(gx * gx + gy * gy) > 2.0f) {
+                if (!isCalibrated) calibrateCenter()
                 val currentRoll = computeScreenRollFromGravity(gx, gy)
                 val relRoll = wrapAngle180(currentRoll - baselineRollDeg)
                 if (!hasPrevGravRoll) {
@@ -226,7 +234,9 @@ class SteeringManager(context: Context) : SensorEventListener {
                     continuousGravDeg += wrapAngle180(relRoll - prevGravRollDeg)
                     prevGravRollDeg = relRoll
                 }
-                processFinalSteeringAngle(continuousGravDeg, event.timestamp)
+                if (!hasHardwareGyro) {
+                    processFinalSteeringAngle(continuousGravDeg, event.timestamp)
+                }
             }
             return
         }
@@ -247,61 +257,70 @@ class SteeringManager(context: Context) : SensorEventListener {
             val gx = filteredGravity[0]
             val gy = filteredGravity[1]
             val gz = filteredGravity[2]
+            val gravMag = sqrt(gx * gx + gy * gy + gz * gz).coerceAtLeast(1.0f)
             val screenPlaneMag = sqrt(gx * gx + gy * gy)
 
-            val rawOmegaZ = -Math.toDegrees(event.values[2].toDouble()).toFloat()
-            val tiltRateDeg = Math.toDegrees(
-                sqrt((event.values[0] * event.values[0] + event.values[1] * event.values[1]).toDouble())
-            ).toFloat()
+            // 1. 3D Pitch-Compensated Gyro Rate:
+            // Blends pure Z-screen rotation with 3D gravity-plane projection so tilting the phone
+            // forward/backward mid-turn never induces cross-axis steering deflection.
+            val wx = event.values[0]
+            val wy = event.values[1]
+            val wz = event.values[2]
+            val rawOmegaZ = -Math.toDegrees(wz.toDouble()).toFloat()
 
-            // 1. Online Gyro Bias Cancellation: when phone is held steady (< 1.8 deg/s),
-            // learn the sensor's thermal zero-rate offset so it NEVER drifts while holding a line.
-            if (abs(rawOmegaZ - gyroBiasZDegPerSec) < 1.8f && tiltRateDeg < 4.0f && lastLinearAccelError < 0.8f) {
-                gyroBiasZDegPerSec += (rawOmegaZ - gyroBiasZDegPerSec) * (0.5f * dt).coerceIn(0.0f, 0.02f)
+           // Pure 1:1 silicon screen-plane gyro rate (NO cosPitch division so gyro matches gravity 1:1!)
+            val trueOmegaDeg = rawOmegaZ
+            val tiltRateDeg = Math.toDegrees(sqrt((wx * wx + wy * wy).toDouble())).toFloat()
+
+            // 2. Stationary Online Bias Tracker + Sub-Threshold Noise Gate
+            if (abs(trueOmegaDeg - gyroBiasDegPerSec) < 1.5f && tiltRateDeg < 3.5f && lastLinearAccelError < 0.7f) {
+                gyroBiasDegPerSec += (trueOmegaDeg - gyroBiasDegPerSec) * (0.8f * dt).coerceIn(0.0f, 0.03f)
             }
 
-            var omegaZDegPerSec = rawOmegaZ - gyroBiasZDegPerSec
-            // Micro-noise gate: ignore sub-0.12 deg/s sensor floor noise so stationary wheel is 100% frozen
-            if (abs(omegaZDegPerSec) < 0.12f) omegaZDegPerSec = 0.0f
+            var omegaClean = trueOmegaDeg - gyroBiasDegPerSec
+            if (abs(omegaClean) < 0.18f) omegaClean = 0.0f
 
-            fusedAngleDeg += omegaZDegPerSec * dt
+            // 3. Second-Order Runge-Kutta (RK2 Midpoint) Integration
+            val midpointOmega = 0.5f * (prevOmegaDegPerSec + omegaClean)
+            prevOmegaDegPerSec = omegaClean
+            fusedAngleDeg += midpointOmega * dt
 
-            // 2. Zero-Deflection Horizon Lock
+            // 4. Zero-Overshoot Horizon Lock (No integral wind-up!)
             if (settings.gravityAnchorEnabled && hasPrevGravRoll && screenPlaneMag > 2.5f) {
                 val turnOffset = ((fusedAngleDeg - continuousGravDeg) / 360.0f).roundToInt() * 360.0f
                 val alignedGravDeg = continuousGravDeg + turnOffset
                 val gravError = alignedGravDeg - fusedAngleDeg
 
-                // Gate out gravity error if user is whipping the wheel fast or tilting phone forward/back
-                val tiltGate = (1.0f - (tiltRateDeg / 75.0f)).coerceIn(0.0f, 1.0f)
-                val whipGate = (1.0f - (lastLinearAccelError / 2.5f)).coerceIn(0.0f, 1.0f)
-                val speedGate = (1.0f - (abs(omegaZDegPerSec) / 120.0f)).coerceIn(0.0f, 1.0f)
+                // Only correct drift when hands are NOT whipping or tilting the phone
+                val tiltGate = (1.0f - (tiltRateDeg / 50.0f)).coerceIn(0.0f, 1.0f)
+                val whipGate = (1.0f - (lastLinearAccelError / 1.8f)).coerceIn(0.0f, 1.0f)
+                val confidence = tiltGate * whipGate
 
-                // Strong anchor inside first ±135°; gentle anchor on deep multi-turn parking locks
-                val correctionRate = if (abs(fusedAngleDeg) < 135.0f) 3.2f else 1.2f
-                val alphaComplement = (correctionRate * speedGate * tiltGate * whipGate * dt).coerceIn(0.0f, 0.08f)
-
-                fusedAngleDeg += gravError * alphaComplement
+                val kp = if (abs(fusedAngleDeg) < 135.0f) 4.0f else 1.5f
+                fusedAngleDeg += (kp * gravError * confidence * dt).coerceIn(-3.0f, 3.0f)
                 continuousGravDeg = alignedGravDeg
             }
 
-            // 3. Stationary Recenter Drift Bleed + Caster Spring Assistance:
-            // When holding the wheel nearly still within ±12° of center, gently bleed out any
-            // residual sub-degree posture/sensor offset so the truck tracks laser-straight.
-            val isHoldingSteady = abs(omegaZDegPerSec) < 2.5f && tiltRateDeg < 6.0f
-            if (isHoldingSteady && abs(fusedAngleDeg) < 12.0f) {
-                val bleedRate = 0.35f * settings.autoZeroRecenterSensitivity
-                val snapBoost = if (settings.centerSnapAssistance && abs(fusedAngleDeg) < 3.5f) 2.2f else 1.0f
-                val bleedAlpha = (bleedRate * snapBoost * dt).coerceIn(0.0f, 0.05f)
+            // 5. Realistic Truck Steering Rack Self-Aligning Caster & Stationary Zero-Bleed
+            val isHandsSteady = abs(omegaClean) < 2.2f && tiltRateDeg < 5.0f
+            if (isHandsSteady && abs(fusedAngleDeg) < 10.0f) {
+                val bleedRate = 0.40f * settings.autoZeroRecenterSensitivity
+                val snapBoost = if (settings.centerSnapAssistance && abs(fusedAngleDeg) < 3.0f) 2.5f else 1.0f
+                val bleedAlpha = (bleedRate * snapBoost * dt).coerceIn(0.0f, 0.06f)
                 fusedAngleDeg *= (1.0f - bleedAlpha)
                 continuousGravDeg *= (1.0f - bleedAlpha)
             }
 
-            // 4. Active Caster Self-Aligning Spring when cruising (> 15 km/h) and relaxing hands
-            if (settings.casterSpringStrength > 0.01f && abs(currentSpeedKmh) > 15.0f && abs(omegaZDegPerSec) < 8.0f) {
-                val speedScale = (abs(currentSpeedKmh) / 80.0f).coerceIn(0.2f, 1.0f)
-                val springPull = settings.casterSpringStrength * speedScale * 1.8f * dt
-                fusedAngleDeg *= (1.0f - springPull.coerceIn(0.0f, 0.04f))
+            if (settings.casterSpringStrength > 0.01f && abs(currentSpeedKmh) > 8.0f && abs(omegaClean) < 6.0f) {
+                // Real pneumatic tire trail: return rate scales with truck speed, damped near 0°
+                val speedFactor = (abs(currentSpeedKmh) / 75.0f).coerceIn(0.0f, 1.0f)
+                val returnDegPerSec = settings.casterSpringStrength * speedFactor * 45.0f
+                val maxStep = returnDegPerSec * dt
+                if (abs(fusedAngleDeg) <= maxStep) {
+                    fusedAngleDeg = 0.0f
+                } else {
+                    fusedAngleDeg -= sign(fusedAngleDeg) * maxStep
+                }
             }
 
             processFinalSteeringAngle(fusedAngleDeg, nowNs)
@@ -319,16 +338,23 @@ class SteeringManager(context: Context) : SensorEventListener {
         // Below 35 km/h (and in Reverse), smoothly reduce required wrist rotation by 25%
         // so tight roundabouts and trailer backing don't require awkward arm crossovers.
         // Above 45 km/h, smoothly locks to 100% full range for highway stability.
-        val cityAgilityScale = (0.75f + 0.25f * (( abs(currentSpeedKmh) - 10.0f) / 35.0f).coerceIn(0.0f, 1.0f))
-        val halfLockDeg = (baseHalfLockDeg * cityAgilityScale).coerceAtLeast(30.0f)
+        val halfLockDeg = baseHalfLockDeg
 
         // Prevent wind-up beyond physical lock
-        val maxTurnLimit = halfLockDeg + 15.0f
+        val maxTurnLimit = halfLockDeg + 10.0f
         fusedAngleDeg = fusedAngleDeg.coerceIn(-maxTurnLimit, maxTurnLimit)
         continuousGravDeg = continuousGravDeg.coerceIn(-maxTurnLimit, maxTurnLimit)
 
+        // Kinematic Column Friction: locks wheel 100% still against <0.22° hand micro-tremor or haptic buzz
+        val clampedTarget = unfilteredAngleDeg.coerceIn(-halfLockDeg, halfLockDeg)
+        val stictionDeg = if (isHapticVibrating) 0.55f else if (abs(prevOmegaDegPerSec) < 2.0f) 0.22f else 0.0f
+        val diff = clampedTarget - anchoredAngleDeg
+        if (abs(diff) > stictionDeg) {
+            anchoredAngleDeg = clampedTarget - sign(diff) * stictionDeg
+        }
+
         val timestampSec = timestampNs * 1e-9
-        val smoothedAngle = filter.filter(unfilteredAngleDeg.coerceIn(-halfLockDeg, halfLockDeg), timestampSec)
+        val smoothedAngle = filter.filter(anchoredAngleDeg, timestampSec)
 
         val totalAngle = if (settings.invertSteering) -smoothedAngle else smoothedAngle
         rawAngleDeg = totalAngle

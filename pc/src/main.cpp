@@ -294,6 +294,7 @@ int main() {
     float targetSteer = 0.0f;
     float currentSteer = 0.0f;
     bool hasInitialSteer = false;
+    auto neutralHoldUntil = std::chrono::steady_clock::now();
 
     // Main ultra-low-latency input loop
     while (g_running) {
@@ -335,9 +336,14 @@ int main() {
 
         if (!gotNewPacket) {
             if (hasInitialSteer) {
+                // Critically-damped zero-overshoot glide toward targetSteer at 500Hz
                 float delta = targetSteer - currentSteer;
-                float speedRate = 140.0f + std::abs(delta) * 260.0f;
-                currentSteer += delta * (1.0f - std::exp(-speedRate * dt));
+                if (std::abs(delta) < 0.0002f) {
+                    currentSteer = targetSteer;
+                } else {
+                    float speedRate = 180.0f + std::abs(delta) * 220.0f;
+                    currentSteer += delta * (1.0f - std::exp(-speedRate * dt));
+                }
                 gamepad.update(currentSteer, g_latestState.throttle, g_latestState.brake,
                                g_latestState.buttons, g_latestState.flags, g_latestState.lookX);
             }
@@ -372,9 +378,23 @@ int main() {
             hasInitialSteer = true;
         } else {
             float delta = targetSteer - currentSteer;
-            float speedRate = 140.0f + std::abs(delta) * 260.0f;
-            currentSteer += delta * (1.0f - std::exp(-speedRate * dt));
+            if (std::abs(delta) < 0.0002f) {
+                currentSteer = targetSteer;
+            } else {
+                float speedRate = 180.0f + std::abs(delta) * 220.0f;
+                currentSteer += delta * (1.0f - std::exp(-speedRate * dt));
+            }
         }
+
+        // Check Shift-to-Neutral hold timer BEFORE updating gamepad so Joy LB + Joy RB is active immediately
+        if (state.flags & (1 << 1)) {
+            neutralHoldUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(550);
+        }
+        if (std::chrono::steady_clock::now() < neutralHoldUntil) {
+            state.flags |= (1 << 1);
+            g_latestState.flags |= (1 << 1);
+        }
+
         gamepad.update(currentSteer, state.throttle, state.brake, state.buttons, state.flags, state.lookX);
 
         // Auto-center interior camera ('1') when releasing finger after looking left/right
@@ -484,15 +504,9 @@ int main() {
             injectKeyPulse(VK_LCONTROL, 0x1D, false, 150);
             std::cout << "[TRANSMISSION] Shift Down ('Ctrl' / Joy LB)" << std::endl;
         }
-        // Flags Bit 1: Native ETS2 Shift To Neutral ("Joy LB + Joy RB (Hold)")
-        static auto s_neutralHoldUntil = std::chrono::steady_clock::now();
+        // Flags Bit 1: Log Shift To Neutral trigger
         if (newFlags & (1 << 1)) {
-            s_neutralHoldUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(550);
             std::cout << "[TRANSMISSION] Shift To Neutral (Hold Joy LB + Joy RB)" << std::endl;
-        }
-        if (std::chrono::steady_clock::now() < s_neutralHoldUntil) {
-            state.flags |= (1 << 1);
-            g_latestState.flags |= (1 << 1);
         }
 
         // 13. In-Game Radio Hotkeys
