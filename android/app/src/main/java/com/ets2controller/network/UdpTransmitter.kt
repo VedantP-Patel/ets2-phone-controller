@@ -156,12 +156,12 @@ class UdpTransmitter {
         val shiftNeutral = if ((activeButtons and (1L shl 17)) != 0L) (1 shl 1) else 0
         val airHorn = if ((activeButtons and (1L shl 23)) != 0L) (1 shl 2) else 0
 
-        // Upper 5 bits of flags (bits 3..7): Encoded Command ID (1..20) for bits 18..34
+        // Upper 5 bits of flags (bits 3..7): Encoded Command ID (1..31) for bits 18..48
         var extCmdId = 0
-        for (bit in 18..34) {
+        for (bit in 18..48) {
             if (bit == 23) continue // Air Horn handled in bit 2
             if ((activeButtons and (1L shl bit)) != 0L) {
-                extCmdId = (bit - 17) // Maps bit 18 -> 1, 19 -> 2, ..., 34 -> 17
+                extCmdId = (bit - 17) // Maps bit 18 -> 1 ... bit 48 -> 31
                 break
             }
         }

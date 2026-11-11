@@ -231,8 +231,15 @@ class SteeringManager(context: Context) : SensorEventListener {
                     continuousGravDeg = relRoll
                     hasPrevGravRoll = true
                 } else {
-                    continuousGravDeg += wrapAngle180(relRoll - prevGravRollDeg)
+                    val rawDeltaGrav = wrapAngle180(relRoll - prevGravRollDeg)
                     prevGravRollDeg = relRoll
+                    // If user is not actively steering with the Z-gyro, absorb posture/grip shifts into baseline!
+                    if (hasHardwareGyro && abs(prevOmegaDegPerSec) < 1.8f && abs(rawDeltaGrav) < 1.5f) {
+                        baselineRollDeg = wrapAngle180(baselineRollDeg + rawDeltaGrav * 0.65f)
+                        continuousGravDeg += rawDeltaGrav * 0.35f
+                    } else {
+                        continuousGravDeg += rawDeltaGrav
+                    }
                 }
                 if (!hasHardwareGyro) {
                     processFinalSteeringAngle(continuousGravDeg, event.timestamp)
@@ -285,42 +292,57 @@ class SteeringManager(context: Context) : SensorEventListener {
             prevOmegaDegPerSec = omegaClean
             fusedAngleDeg += midpointOmega * dt
 
-            // 4. Zero-Overshoot Horizon Lock (No integral wind-up!)
-            if (settings.gravityAnchorEnabled && hasPrevGravRoll && screenPlaneMag > 2.5f) {
+            // 4. Unified Posture-Invariant Horizon & Grip-Adaptation Engine
+            if (hasPrevGravRoll && screenPlaneMag > 2.5f) {
                 val turnOffset = ((fusedAngleDeg - continuousGravDeg) / 360.0f).roundToInt() * 360.0f
                 val alignedGravDeg = continuousGravDeg + turnOffset
                 val gravError = alignedGravDeg - fusedAngleDeg
 
-                // Only correct drift when hands are NOT whipping or tilting the phone
-                val tiltGate = (1.0f - (tiltRateDeg / 50.0f)).coerceIn(0.0f, 1.0f)
-                val whipGate = (1.0f - (lastLinearAccelError / 1.8f)).coerceIn(0.0f, 1.0f)
-                val confidence = tiltGate * whipGate
+                // Detect when the player is shifting their grip, leaning in their chair, or tilting the screen:
+                // High X/Y tilt rate OR linear acceleration while Z-steering rate is low.
+                val isShiftingGrip = (tiltRateDeg > 10.0f && tiltRateDeg > abs(omegaClean) * 0.6f) || lastLinearAccelError > 1.1f
 
-                val kp = if (abs(fusedAngleDeg) < 135.0f) 4.0f else 1.5f
-                fusedAngleDeg += (kp * gravError * confidence * dt).coerceIn(-3.0f, 3.0f)
-                continuousGravDeg = alignedGravDeg
+                if (isShiftingGrip) {
+                    // Lock steering angle completely during grip/posture changes and re-sync gravity baseline
+                    // to the current steering angle so tilting the phone NEVER deflects the truck!
+                    baselineRollDeg = wrapAngle180(baselineRollDeg + gravError * (4.0f * dt).coerceIn(0.0f, 0.25f))
+                    continuousGravDeg = fusedAngleDeg
+                } else {
+                    val isHandsSteady = abs(omegaClean) < 2.0f && tiltRateDeg < 4.5f && lastLinearAccelError < 0.6f
+
+                    if (isHandsSteady && abs(fusedAngleDeg) < 9.0f) {
+                        // Player is holding a steady highway line near center:
+                        // 1. Adapt baselineRollDeg to their new comfortable hand posture so they never fight a pull
+                        baselineRollDeg = wrapAngle180(baselineRollDeg + gravError * (1.2f * dt).coerceIn(0.0f, 0.05f))
+
+                        // 2. Smoothly bleed any residual sub-degree offset to 0.0°
+                        val bleedRate = 0.45f * settings.autoZeroRecenterSensitivity
+                        val snapBoost = if (settings.centerSnapAssistance && abs(fusedAngleDeg) < 3.0f) 2.2f else 1.0f
+                        val bleedAlpha = (bleedRate * snapBoost * dt).coerceIn(0.0f, 0.05f)
+                        fusedAngleDeg *= (1.0f - bleedAlpha)
+                        continuousGravDeg = fusedAngleDeg
+                    } else if (settings.gravityAnchorEnabled) {
+                        // Active turning with clean posture: gentle horizon drift correction
+                        val tiltGate = (1.0f - (tiltRateDeg / 30.0f)).coerceIn(0.0f, 1.0f)
+                        val whipGate = (1.0f - (lastLinearAccelError / 1.2f)).coerceIn(0.0f, 1.0f)
+                        val kp = if (abs(fusedAngleDeg) < 120.0f) 1.8f else 0.8f
+                        fusedAngleDeg += (kp * gravError * tiltGate * whipGate * dt).coerceIn(-1.5f, 1.5f)
+                        continuousGravDeg = alignedGravDeg
+                    }
+                }
             }
 
-            // 5. Realistic Truck Steering Rack Self-Aligning Caster & Stationary Zero-Bleed
-            val isHandsSteady = abs(omegaClean) < 2.2f && tiltRateDeg < 5.0f
-            if (isHandsSteady && abs(fusedAngleDeg) < 10.0f) {
-                val bleedRate = 0.40f * settings.autoZeroRecenterSensitivity
-                val snapBoost = if (settings.centerSnapAssistance && abs(fusedAngleDeg) < 3.0f) 2.5f else 1.0f
-                val bleedAlpha = (bleedRate * snapBoost * dt).coerceIn(0.0f, 0.06f)
-                fusedAngleDeg *= (1.0f - bleedAlpha)
-                continuousGravDeg *= (1.0f - bleedAlpha)
-            }
-
-            if (settings.casterSpringStrength > 0.01f && abs(currentSpeedKmh) > 8.0f && abs(omegaClean) < 6.0f) {
-                // Real pneumatic tire trail: return rate scales with truck speed, damped near 0°
-                val speedFactor = (abs(currentSpeedKmh) / 75.0f).coerceIn(0.0f, 1.0f)
-                val returnDegPerSec = settings.casterSpringStrength * speedFactor * 45.0f
+            // 5. Speed-Proportional Pneumatic Tire Self-Aligning Caster (only when relaxing hands at speed)
+            if (settings.casterSpringStrength > 0.01f && abs(currentSpeedKmh) > 10.0f && abs(omegaClean) < 4.0f) {
+                val speedFactor = (abs(currentSpeedKmh) / 80.0f).coerceIn(0.0f, 1.0f)
+                val returnDegPerSec = settings.casterSpringStrength * speedFactor * 38.0f
                 val maxStep = returnDegPerSec * dt
                 if (abs(fusedAngleDeg) <= maxStep) {
                     fusedAngleDeg = 0.0f
                 } else {
                     fusedAngleDeg -= sign(fusedAngleDeg) * maxStep
                 }
+                continuousGravDeg = fusedAngleDeg
             }
 
             processFinalSteeringAngle(fusedAngleDeg, nowNs)

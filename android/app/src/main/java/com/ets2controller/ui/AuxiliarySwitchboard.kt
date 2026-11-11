@@ -54,18 +54,18 @@ fun AuxSwitchboard(
         AuxSwitchDef(18, "V", "DIFF LOCK", "Cross-Axle Lock", Color(0xFFFF9100), "DIFF"),
         AuxSwitchDef(19, "U", "LIFT AXLE", "Chassis Elevation", Color(0xFF00E5FF), "LIFT"),
         AuxSwitchDef(20, "T", "TRAILER HOOK", "5th Wheel Coupler", Color(0xFFFF5252), "TRAILER"),
-        AuxSwitchDef(3, "F", "HAZARDS", "4-Way Emergency", Color(0xFFFF3D00), "HAZARD"),
+        AuxSwitchDef(35, "J", "LIGHT HORN", "Flash High Beams", Color(0xFF2979FF), "BEACON", isMomentary = true),
         AuxSwitchDef(22, "O", "BEACONS", "Strobe Hazards", Color(0xFFFFD600), "BEACON"),
         AuxSwitchDef(23, "N", "AIR HORN", "Dual Roof Trumpet", Color(0xFFFFAB00), "AIR_HORN", isMomentary = true)
     )
 
     val page2Switches = listOf(
         AuxSwitchDef(30, "ENTER", "CONFIRM / PAY", "Fuel / Ferry / Toll", Color(0xFF00E676), "ENTER", isMomentary = true),
-        AuxSwitchDef(29, "I", "DASH DISPLAY", "Trip Info Computer", Color(0xFF2979FF), "INFO", isMomentary = true),
-        AuxSwitchDef(31, "F6", "JOB & CARGO", "Delivery Details", Color(0xFF00E5FF), "INFO", isMomentary = true),
-        AuxSwitchDef(32, "F7", "DAMAGE & TOW", "Service / Assistance", Color(0xFFFF9100), "HAZARD", isMomentary = true),
+        AuxSwitchDef(42, "M", "WORLD MAP", "Full Route Map", Color(0xFF00E5FF), "INFO", isMomentary = true),
+        AuxSwitchDef(31, "F6", "JOB & CARGO", "Delivery Details", Color(0xFF2979FF), "INFO", isMomentary = true),
+        AuxSwitchDef(32, "F7", "DAMAGE & TOW", "Emergency Service", Color(0xFFFF9100), "HAZARD", isMomentary = true),
         AuxSwitchDef(33, "CAM 5", "REVERSE PEEK", "Lean Out Window", Color(0xFFAB47BC), "LIFT", isMomentary = true),
-        AuxSwitchDef(34, "CAM 2", "EXTERIOR CAM", "3rd Person Orbit", Color(0xFF26A69A), "BEACON", isMomentary = true)
+        AuxSwitchDef(37, "CAM 3", "PARKING CAM", "Top-Down Yard View", Color(0xFF26A69A), "BEACON", isMomentary = true)
     )
 
     val currentSwitches = if (selectedTab == 0) page1Switches else page2Switches

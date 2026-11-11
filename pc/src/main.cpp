@@ -607,6 +607,42 @@ int main() {
                 injectKeyPulse('2', 0x03, false, 120);
                 std::cout << "[CAMERA] Exterior Chase View ('2')" << std::endl;
                 break;
+            case 18: // Bit 35: Light Horn / Flash High Beams ('J' scan 0x24 - Factory Default)
+                injectKeyPulse('J', 0x24, false, 220);
+                std::cout << "[LIGHT HORN] Flash High Beams ('J')" << std::endl;
+                break;
+            case 19: // Bit 36: Wipers Back / Step Down (Swipe Down on Wipers)
+                injectKeyPulse('P', 0x19, false, 120);
+                std::cout << "[WIPERS] Cycle Wiper Speed ('P')" << std::endl;
+                break;
+            case 20: // Bit 37: Top Overhead Parking Camera ('3' scan 0x04 - Factory Default)
+                injectKeyPulse('3', 0x04, false, 120);
+                std::cout << "[CAMERA] Top-Down Yard Parking View ('3')" << std::endl;
+                break;
+            case 21: // Bit 38: Cabin Interior Look Left (NumPad / scan 0x35 extended)
+                injectKeyPulse(VK_DIVIDE, 0x35, true, 120);
+                std::cout << "[CAMERA] Quick Look Left Mirror" << std::endl;
+                break;
+            case 22: // Bit 39: Cabin Interior Look Right (NumPad * scan 0x37)
+                injectKeyPulse(VK_MULTIPLY, 0x37, false, 120);
+                std::cout << "[CAMERA] Quick Look Right Mirror" << std::endl;
+                break;
+            case 23: // Bit 40: Route Advisor Navigation Map Mode ('F5' scan 0x3F)
+                injectKeyPulse(VK_F5, 0x3F, false, 120);
+                std::cout << "[ADVISOR] GPS Navigation Page ('F5')" << std::endl;
+                break;
+            case 24: // Bit 41: Route Advisor Rest / Weigh Station Info ('F8' scan 0x42)
+                injectKeyPulse(VK_F8, 0x42, false, 120);
+                std::cout << "[ADVISOR] Messages & Tachograph Rest Info ('F8')" << std::endl;
+                break;
+            case 25: // Bit 42: Full World Map ('M' scan 0x32)
+                injectKeyPulse('M', 0x32, false, 120);
+                std::cout << "[WORLD MAP] Toggle Full Map ('M')" << std::endl;
+                break;
+            case 26: // Bit 43: Garage / Company Manager / Esc Menu (VK_ESCAPE scan 0x01)
+                injectKeyPulse(VK_ESCAPE, 0x01, false, 120);
+                std::cout << "[MENU] Pause / Main Menu ('ESC')" << std::endl;
+                break;
             default:
                 break;
         }

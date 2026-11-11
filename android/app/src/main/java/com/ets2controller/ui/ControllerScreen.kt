@@ -52,8 +52,9 @@ fun ControllerScreen(
             bitIndex = 2,
             icon = "💡",
             label = "LIGHTS ↕",
-            swipeUpBit = 21,   // Swipe Up = High Beams ('K')
-            swipeDownBit = 22  // Swipe Down = Roof Beacons ('O')
+            swipeUpBit = 21,   // Swipe Up   = High Beams ('K')
+            swipeDownBit = 22, // Swipe Down = Roof Beacons ('O')
+            longPressBit = 35  // Hold       = Flash High Beams / Light Horn ('J')!
         ),
         ActionButtonDef(
             bitIndex = 0,
@@ -100,10 +101,10 @@ fun ControllerScreen(
         ActionButtonDef(
             bitIndex = 8,
             icon = "🗺",
-            label = "ADVISOR ↕",
+            label = "MAP / GPS ↕",
             swipeUpBit = 29,   // Swipe Up   = Dash Computer ('I')
-            swipeDownBit = 31, // Swipe Down = Job Info ('F6')
-            longPressBit = 32  // Hold       = Damage/Tow ('F7')
+            swipeDownBit = 31, // Swipe Down = Job & Cargo Info ('F6')
+            longPressBit = 42  // Hold       = Full World Map ('M')!
         ),
         ActionButtonDef(bitIndex = 12, icon = "WIPER", label = "WIPERS"),
         ActionButtonDef(
@@ -111,7 +112,8 @@ fun ControllerScreen(
             icon = "📷",
             label = "CAM ↕",
             swipeUpBit = 34,   // Swipe Up   = Exterior Chase Cam ('2')
-            swipeDownBit = 33  // Swipe Down = Lean Out Window Reverse Cam ('5')
+            swipeDownBit = 33, // Swipe Down = Lean Out Window Reverse Cam ('5')
+            longPressBit = 37  // Hold       = Top-Down Bird's-Eye Parking Cam ('3')!
         ),
         ActionButtonDef(bitIndex = -2, icon = "🎛️", label = "SWITCHES", isPrimary = true)
     )
