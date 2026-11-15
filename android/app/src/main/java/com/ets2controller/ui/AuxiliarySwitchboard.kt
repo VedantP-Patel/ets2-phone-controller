@@ -1,384 +1,206 @@
 package com.ets2controller.ui
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ets2controller.ui.theme.CockpitBorder
-import com.ets2controller.ui.theme.CockpitPanel
-import com.ets2controller.ui.theme.GaugeAccent
+import com.ets2controller.ui.theme.*
 
-data class AuxSwitchDef(
+data class MoreTileDef(
+    val id: String,
+    val label: String,
+    val icon: String,
     val bitIndex: Int,
-    val keyHint: String,
-    val title: String,
-    val subtitle: String,
-    val activeColor: Color,
-    val iconType: String,
-    val isMomentary: Boolean = false
+    val isLatched: Boolean = false
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AuxSwitchboard(
-    activeMask: Int,
-    telemetryAuxFlags: Int = 0,
-    isHazardActive: Boolean = false,
-    onPressChange: (Int, Boolean) -> Unit,
-    onAirHornBlast: () -> Unit,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
+fun MoreDrawerOverlay(
+    pinnedTileId: String,
+    accentColor: Color,
+    onTriggerTile: (MoreTileDef) -> Unit,
+    onPinTile: (MoreTileDef) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    val haptic = LocalHapticFeedback.current
-    var selectedTab by remember { mutableIntStateOf(0) }
-
-    val page1Switches = listOf(
-        AuxSwitchDef(18, "V", "DIFF LOCK", "Cross-Axle Lock", Color(0xFFFF9100), "DIFF"),
-        AuxSwitchDef(19, "U", "LIFT AXLE", "Chassis Elevation", Color(0xFF00E5FF), "LIFT"),
-        AuxSwitchDef(20, "T", "TRAILER HOOK", "5th Wheel Coupler", Color(0xFFFF5252), "TRAILER"),
-        AuxSwitchDef(35, "J", "LIGHT HORN", "Flash High Beams", Color(0xFF2979FF), "BEACON", isMomentary = true),
-        AuxSwitchDef(22, "O", "BEACONS", "Strobe Hazards", Color(0xFFFFD600), "BEACON"),
-        AuxSwitchDef(23, "N", "AIR HORN", "Dual Roof Trumpet", Color(0xFFFFAB00), "AIR_HORN", isMomentary = true)
-    )
-
-    val page2Switches = listOf(
-        AuxSwitchDef(30, "ENTER", "CONFIRM / PAY", "Fuel / Ferry / Toll", Color(0xFF00E676), "ENTER", isMomentary = true),
-        AuxSwitchDef(42, "M", "WORLD MAP", "Full Route Map", Color(0xFF00E5FF), "INFO", isMomentary = true),
-        AuxSwitchDef(31, "F6", "JOB & CARGO", "Delivery Details", Color(0xFF2979FF), "INFO", isMomentary = true),
-        AuxSwitchDef(32, "F7", "DAMAGE & TOW", "Emergency Service", Color(0xFFFF9100), "HAZARD", isMomentary = true),
-        AuxSwitchDef(33, "CAM 5", "REVERSE PEEK", "Lean Out Window", Color(0xFFAB47BC), "LIFT", isMomentary = true),
-        AuxSwitchDef(37, "CAM 3", "PARKING CAM", "Top-Down Yard View", Color(0xFF26A69A), "BEACON", isMomentary = true)
-    )
-
-    val currentSwitches = if (selectedTab == 0) page1Switches else page2Switches
-
-    // Real telemetry flags from SCS SDK telemetry
-    val isDiffLocked = (telemetryAuxFlags and (1 shl 0)) != 0
-    val isLiftActive = (telemetryAuxFlags and (1 shl 1)) != 0
-    val isTrailerConnected = (telemetryAuxFlags and (1 shl 2)) != 0
-    val isHighBeamOn = (telemetryAuxFlags and (1 shl 3)) != 0
-    val isBeaconOn = (telemetryAuxFlags and (1 shl 4)) != 0
-
-    fun isSwitchEngaged(sw: AuxSwitchDef): Boolean {
-        val isPhysicallyPressed = sw.bitIndex < 32 && (activeMask and (1 shl sw.bitIndex)) != 0
-        if (sw.isMomentary) return isPhysicallyPressed
-
-        val isTelemetryActive = when (sw.bitIndex) {
-            18 -> isDiffLocked
-            19 -> isLiftActive
-            20 -> isTrailerConnected
-            21 -> isHighBeamOn
-            22 -> isBeaconOn
-            3 -> isHazardActive
-            else -> false
-        }
-        return isTelemetryActive || isPhysicallyPressed
+    val leftCategories = remember {
+        listOf(
+            "DRIVE ASSIST" to listOf(
+                MoreTileDef("acc_gap", "ACC GAP", "CAR_RADAR", 46),
+                MoreTileDef("acc_mode", "ACC MODE", "CRUISE", 48),
+                MoreTileDef("lane_assist", "LANE ASSIST", "LANE", 47),
+                MoreTileDef("drive", "DRIVE", "D_LETTER", 56),
+                MoreTileDef("reverse", "REVERSE", "R_LETTER", 57)
+            ),
+            "CHASSIS" to listOf(
+                MoreTileDef("diff_lock", "DIFF LOCK", "DIFF_LOCK", 18, true),
+                MoreTileDef("front", "FRONT", "SUSP", 49),
+                MoreTileDef("rear", "REAR", "SUSP", 51),
+                MoreTileDef("eng_brake", "ENG BRAKE", "ARROW_RIGHT", 7),
+                MoreTileDef("flash", "FLASH", "FLASH", 35)
+            ),
+            "VIEWS" to listOf(
+                MoreTileDef("look_l", "LOOK L", "EYE", 38),
+                MoreTileDef("look_r", "LOOK R", "EYE", 39),
+                MoreTileDef("mirrors", "MIRRORS", "MIRROR", 40),
+                MoreTileDef("next_cam", "NEXT CAM", "CAMERA", 13),
+                MoreTileDef("map", "MAP", "MAP", 42)
+            )
+        )
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color(0xFF13171F).copy(alpha = 0.96f))
-            .border(1.5.dp, CockpitBorder, RoundedCornerShape(14.dp))
-            .padding(10.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // Header Bar with Tab Selector
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text("🎛️", fontSize = 15.sp)
-                    Text(
-                        "MULTIPLEX SWITCHBOARD",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.8.sp
-                    )
-
-                    // Tab 0: Traction & Lights
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (selectedTab == 0) GaugeAccent else CockpitPanel)
-                            .border(1.dp, if (selectedTab == 0) GaugeAccent else CockpitBorder, RoundedCornerShape(6.dp))
-                            .clickable { selectedTab = 0 }
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            "1. TRACTION & LIGHTS",
-                            color = if (selectedTab == 0) Color.Black else Color.LightGray,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    // Tab 1: Suspension, Windows & Service Prompts
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (selectedTab == 1) GaugeAccent else CockpitPanel)
-                            .border(1.dp, if (selectedTab == 1) GaugeAccent else CockpitBorder, RoundedCornerShape(6.dp))
-                            .clickable { selectedTab = 1 }
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            "2. SUSPENSION & CABIN",
-                            color = if (selectedTab == 1) Color.Black else Color.LightGray,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                // Close button
-                Box(
-                    modifier = Modifier
-                        .size(26.dp)
-                        .clip(CircleShape)
-                        .background(CockpitPanel)
-                        .border(1.dp, CockpitBorder, CircleShape)
-                        .clickable { onDismiss() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("✕", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Row 1 (3 switches)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                currentSwitches.take(3).forEach { sw ->
-                    val isEngaged = isSwitchEngaged(sw)
-
-                    RockerSwitchCard(
-                        def = sw,
-                        isEngaged = isEngaged,
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onPressChange(sw.bitIndex, true)
-                            onPressChange(sw.bitIndex, false)
-
-                            if (sw.bitIndex == 23) {
-                                onAirHornBlast()
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Row 2 (3 switches)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                currentSwitches.drop(3).forEach { sw ->
-                    val isEngaged = isSwitchEngaged(sw)
-
-                    RockerSwitchCard(
-                        def = sw,
-                        isEngaged = isEngaged,
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onPressChange(sw.bitIndex, true)
-                            onPressChange(sw.bitIndex, false)
-
-                            if (sw.bitIndex == 23) {
-                                onAirHornBlast()
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        }
+    val rightCategories = remember {
+        listOf(
+            "TRAILER" to listOf(
+                MoreTileDef("couple", "COUPLE", "LINK", 20),
+                MoreTileDef("trailer_brake", "TRAILER\nBRAKE", "TRAILER", 45),
+                MoreTileDef("trailer_axle", "TRAILER AXLE", "AXLE", 44),
+                MoreTileDef("susp_reset", "SUSP RESET", "SUSP", 53),
+                MoreTileDef("truck_axle", "TRUCK AXLE", "AXLE", 19)
+            ),
+            "CABIN" to listOf(
+                MoreTileDef("window_l", "WINDOW L", "WINDOW", 54),
+                MoreTileDef("window_r", "WINDOW R", "WINDOW", 55),
+                MoreTileDef("beacon", "BEACON", "BEACON", 22, true),
+                MoreTileDef("aux_light", "AUX LIGHT", "LIGHTS_LOW", 58),
+                MoreTileDef("wipers", "WIPERS", "WIPERS", 12)
+            ),
+            "GAME" to listOf(
+                MoreTileDef("route", "ROUTE", "ROUTE", 8),
+                MoreTileDef("job_info", "JOB INFO", "JOB", 31),
+                MoreTileDef("photo", "PHOTO", "CAMERA", 59),
+                MoreTileDef("quick_save", "QUICK SAVE", "SAVE", 32),
+                MoreTileDef("pause", "PAUSE", "PAUSE", 43)
+            )
+        )
     }
-}
 
-@Composable
-private fun RockerSwitchCard(
-    def: AuxSwitchDef,
-    isEngaged: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val borderColor = if (isEngaged) def.activeColor else CockpitBorder
-    val glowBg = if (isEngaged) def.activeColor.copy(alpha = 0.18f) else CockpitPanel
-
-    Box(
-        modifier = modifier
-            .height(68.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(glowBg)
-            .border(1.5.dp, borderColor, RoundedCornerShape(8.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 6.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.SpaceBetween
     ) {
+        // Header
         Row(
-            modifier = Modifier.fillMaxSize(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                AuxSwitchIcon(
-                    type = def.iconType,
-                    color = if (isEngaged) def.activeColor else Color.Gray,
-                    modifier = Modifier.size(26.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = def.title,
-                            color = if (isEngaged) Color.White else Color.LightGray,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Black
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(Color.Black.copy(alpha = 0.6f))
-                                .border(0.8.dp, Color.Gray.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                        ) {
+            Text(
+                text = "More",
+                color = TextBright,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "LONG-PRESS ANY TILE TO PIN IT TO THE MAIN SCREEN",
+                color = TextMuted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp
+            )
+            Text(
+                text = "✕ Close",
+                color = BrakePedalRed,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onDismiss() }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+
+        // 2-Column x 3-Category Grid (30 Tiles Total)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            listOf(leftCategories, rightCategories).forEach { colCategories ->
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    colCategories.forEach { (catTitle, tiles) ->
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(
-                                text = def.keyHint,
-                                color = def.activeColor,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.Bold
+                                text = catTitle,
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.8.sp
                             )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                tiles.forEach { tile ->
+                                    val isPinned = tile.id == pinnedTileId
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(62.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(CockpitTile)
+                                            .border(
+                                                width = if (isPinned) 1.5.dp else 1.dp,
+                                                color = if (isPinned) accentColor else CockpitBorder,
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .combinedClickable(
+                                                onClick = { onTriggerTile(tile) },
+                                                onLongClick = { onPinTile(tile) }
+                                            )
+                                            .padding(horizontal = 4.dp, vertical = 6.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        when (tile.icon) {
+                                            "D_LETTER" -> Text("D", color = TextBright, fontSize = 17.sp, fontWeight = FontWeight.Black)
+                                            "R_LETTER" -> Text("R", color = TextBright, fontSize = 17.sp, fontWeight = FontWeight.Black)
+                                            else -> CockpitVectorIcon(
+                                                name = tile.icon,
+                                                tint = if (isPinned) accentColor else TextBright,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = tile.label,
+                                            color = if (isPinned) accentColor else TextBright,
+                                            fontSize = 8.5.sp,
+                                            lineHeight = 9.5.sp,
+                                            textAlign = TextAlign.Center,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            maxLines = 2
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                    Text(
-                        text = def.subtitle,
-                        color = Color.Gray,
-                        fontSize = 9.sp
-                    )
                 }
-            }
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(if (isEngaged) def.activeColor else Color(0xFF22262E))
-                        .border(1.dp, if (isEngaged) def.activeColor else Color.DarkGray, CircleShape)
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = if (def.isMomentary) "PUSH" else if (isEngaged) "ON" else "OFF",
-                    color = if (isEngaged) def.activeColor else Color.Gray,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AuxSwitchIcon(type: String, color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        when (type) {
-            "DIFF" -> {
-                drawLine(color, Offset(0f, h * 0.5f), Offset(w, h * 0.5f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-                drawCircle(color, radius = w * 0.28f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = 1.8.dp.toPx()))
-                drawLine(color, Offset(w * 0.35f, h * 0.35f), Offset(w * 0.65f, h * 0.65f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-                drawLine(color, Offset(w * 0.65f, h * 0.35f), Offset(w * 0.35f, h * 0.65f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-            }
-            "LIFT" -> {
-                drawCircle(color, radius = w * 0.24f, center = Offset(w * 0.5f, h * 0.65f), style = Stroke(width = 2.dp.toPx()))
-                val arrow = Path().apply {
-                    moveTo(w * 0.5f, h * 0.10f)
-                    lineTo(w * 0.30f, h * 0.32f)
-                    lineTo(w * 0.42f, h * 0.32f)
-                    lineTo(w * 0.42f, h * 0.45f)
-                    lineTo(w * 0.58f, h * 0.45f)
-                    lineTo(w * 0.58f, h * 0.32f)
-                    lineTo(w * 0.70f, h * 0.32f)
-                    close()
-                }
-                drawPath(arrow, color = color)
-            }
-            "TRAILER" -> {
-                val hitch = Path().apply {
-                    moveTo(w * 0.20f, h * 0.85f)
-                    lineTo(w * 0.20f, h * 0.35f)
-                    quadraticBezierTo(w * 0.50f, h * 0.15f, w * 0.80f, h * 0.35f)
-                    lineTo(w * 0.80f, h * 0.85f)
-                }
-                drawPath(hitch, color = color, style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                drawCircle(color, radius = w * 0.14f, center = Offset(w * 0.50f, h * 0.50f))
-            }
-            "HAZARD" -> {
-                val outerTri = Path().apply {
-                    moveTo(w * 0.50f, h * 0.16f)
-                    lineTo(w * 0.88f, h * 0.82f)
-                    lineTo(w * 0.12f, h * 0.82f)
-                    close()
-                }
-                drawPath(outerTri, color = color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                drawLine(color, Offset(w * 0.50f, h * 0.38f), Offset(w * 0.50f, h * 0.58f), strokeWidth = 2.2.dp.toPx(), cap = StrokeCap.Round)
-                drawCircle(color, radius = 1.4.dp.toPx(), center = Offset(w * 0.50f, h * 0.70f))
-            }
-            "BEACON" -> {
-                val dome = Path().apply {
-                    moveTo(w * 0.25f, h * 0.75f)
-                    lineTo(w * 0.25f, h * 0.50f)
-                    quadraticBezierTo(w * 0.50f, h * 0.22f, w * 0.75f, h * 0.50f)
-                    lineTo(w * 0.75f, h * 0.75f)
-                    close()
-                }
-                drawPath(dome, color = color, style = Stroke(width = 2.dp.toPx()))
-                drawLine(color, Offset(w * 0.50f, h * 0.12f), Offset(w * 0.50f, h * 0.02f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-                drawLine(color, Offset(w * 0.20f, h * 0.26f), Offset(w * 0.10f, h * 0.16f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-                drawLine(color, Offset(w * 0.80f, h * 0.26f), Offset(w * 0.90f, h * 0.16f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-            }
-            "AIR_HORN", "ENTER", "INFO" -> {
-                drawCircle(color, radius = w * 0.36f, center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = 2.dp.toPx()))
-                drawCircle(color, radius = w * 0.14f, center = Offset(w * 0.5f, h * 0.5f))
             }
         }
     }

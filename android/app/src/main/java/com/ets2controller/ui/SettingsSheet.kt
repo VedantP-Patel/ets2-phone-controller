@@ -1,8 +1,11 @@
 package com.ets2controller.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,25 +15,38 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.ets2controller.config.ControllerSettings
-import com.ets2controller.ui.theme.CockpitBorder
-import com.ets2controller.ui.theme.CockpitPanel
-import com.ets2controller.ui.theme.GaugeAccent
-import com.ets2controller.ui.theme.getThemeAccent
+import com.ets2controller.ui.theme.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+private enum class TuningTab(val title: String) {
+    STEERING("STEERING"),
+    FEEDBACK("FEEDBACK"),
+    COCKPIT("COCKPIT"),
+    CONNECTION("CONNECTION")
+}
+
 @Composable
 fun SettingsDialog(
     currentSettings: ControllerSettings,
     onSave: (ControllerSettings) -> Unit,
+    onResetPinnedSlot: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    var activeTab by remember { mutableStateOf(TuningTab.STEERING) }
+
     var ipText by remember { mutableStateOf(currentSettings.serverIp) }
     var portText by remember { mutableStateOf(currentSettings.serverPort.toString()) }
     var deadzone by remember { mutableFloatStateOf(currentSettings.steeringDeadzoneDeg) }
@@ -44,6 +60,7 @@ fun SettingsDialog(
     var casterSpring by remember { mutableFloatStateOf(currentSettings.casterSpringStrength) }
     var clusterTheme by remember { mutableStateOf(currentSettings.clusterTheme) }
     var useMph by remember { mutableStateOf(currentSettings.speedUnitMph) }
+    var hapticEnabled by remember { mutableStateOf(currentSettings.hapticFeedbackEnabled) }
     var ffbEnabled by remember { mutableStateOf(currentSettings.forceFeedbackEnabled) }
     var soundEnabled by remember { mutableStateOf(currentSettings.soundEffectsEnabled) }
     var autoCancelBlinkers by remember { mutableStateOf(currentSettings.autoCancelBlinkers) }
@@ -54,495 +71,330 @@ fun SettingsDialog(
 
     val activeAccent = getThemeAccent(clusterTheme)
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    // Full-screen edge-to-edge overlay (eliminates Dialog window inset peeking)
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkBackground)
+            .clickable(enabled = false) {}
     ) {
-        Box(
+        // Left Sidebar Navigation Rail
+        Column(
             modifier = Modifier
-                .fillMaxWidth(0.85f)
-                .fillMaxHeight(0.92f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(CockpitPanel)
-                .border(1.5.dp, CockpitBorder, RoundedCornerShape(16.dp))
-                .padding(16.dp)
+                .width(172.dp)
+                .fillMaxHeight()
+                .background(Color(0xFF0A0C10))
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "⚙️ Controller Tuning & Cockpit",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(androidx.compose.foundation.shape.CircleShape)
-                            .background(Color(0xFF1B1E26))
-                            .border(1.dp, CockpitBorder, androidx.compose.foundation.shape.CircleShape)
-                            .clickable { onDismiss() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("✕", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
+            Text(
+                text = "Tuning",
+                color = TextBright,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 4.dp, start = 4.dp)
+            )
 
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Scrollable Body
-                Column(
+            TuningTab.entries.forEach { tab ->
+                val selected = activeTab == tab
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                        .padding(end = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) activeAccent else CockpitTile)
+                        .border(1.dp, if (selected) activeAccent else CockpitBorder, RoundedCornerShape(12.dp))
+                        .clickable { activeTab = tab }
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.CenterStart
                 ) {
-                // Server IP
-                OutlinedTextField(
-                    value = ipText,
-                    onValueChange = { ipText = it },
-                    label = { Text("Server IP (Leave blank for Auto-Discovery)") },
-                    placeholder = { Text("e.g. 192.168.1.50 or 192.168.42.x") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // One-Tap ETS2 Physics Tuning Presets
-                Column {
-                    Text("Quick Physics Preset:", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(
-                            Triple("🛣️ Highway", "Laser-straight center", {
-                                wheelMode1to1 = true; wheelRange = 900f; deadzone = 0.4f
-                                minCutoff = 1.1f; filterBeta = 0.05f; casterSpring = 0.25f
-                                autoZeroRecenterSensitivity = 1.4f; centerSnapAssistance = true; gravityAnchorEnabled = true
-                            }),
-                            Triple("⚖️ Balanced 1:1", "True 900° simulation", {
-                                wheelMode1to1 = true; wheelRange = 900f; deadzone = 0.2f
-                                minCutoff = 1.4f; filterBeta = 0.08f; casterSpring = 0.10f
-                                autoZeroRecenterSensitivity = 1.0f; centerSnapAssistance = true; gravityAnchorEnabled = true
-                            }),
-                            Triple("🅿️ City / Yard", "Fast lock for parking", {
-                                wheelMode1to1 = true; wheelRange = 540f; deadzone = 0.0f
-                                minCutoff = 1.8f; filterBeta = 0.14f; casterSpring = 0.0f
-                                autoZeroRecenterSensitivity = 0.8f; centerSnapAssistance = false; gravityAnchorEnabled = true
-                            })
-                        ).forEach { (title, sub, applyPreset) ->
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF161A22))
-                                    .border(1.dp, activeAccent.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-                                    .clickable { applyPreset() }
-                                    .padding(vertical = 6.dp, horizontal = 4.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(title, color = activeAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text(sub, color = Color.Gray, fontSize = 9.sp, maxLines = 1)
-                            }
-                        }
-                    }
-                }
-                
-                // 1:1 ETS2 Wheel Mode Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                        Text("1:1 ETS2 Wheel Mode", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(
-                            if (wheelMode1to1) "1:1 multi-turn rotation locked to ETS2 truck wheel"
-                            else "Handheld Tilt Mode (quick lock for casual holding)",
-                            color = Color.Gray,
-                            fontSize = 11.sp
-                        )
-                    }
-                    Switch(
-                        checked = wheelMode1to1,
-                        onCheckedChange = { wheelMode1to1 = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Steering Deadzone Slider (Universal for Wheel & Tilt Modes)
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Steering Deadzone (0.0° - 5.0°):", color = Color.White, fontSize = 13.sp)
-                        Text(
-                            if (deadzone <= 0.1f) "0.0° (Instant 1:1)" else "${String.format("%.1f", deadzone)}°",
-                            color = activeAccent,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                    }
-                    Slider(
-                        value = deadzone,
-                        onValueChange = { deadzone = it },
-                        valueRange = 0f..5f,
-                        colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                    )
-                }
-
-                if (wheelMode1to1) {
-                    // Wheel Degrees Range Selector (360°, 540°, 720°, 900°, 1080°)
-                    Column {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Wheel Range (ETS2 Default is 900°):", color = Color.White, fontSize = 13.sp)
-                            Text("${wheelRange.toInt()}° (±${(wheelRange / 2).toInt()}°)", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                        Slider(
-                            value = wheelRange,
-                            onValueChange = { wheelRange = it },
-                            valueRange = 360f..1080f,
-                            steps = 3,
-                            colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            listOf(360, 540, 720, 900, 1080).forEach { deg ->
-                                Text(
-                                    text = "${deg}°",
-                                    color = if (wheelRange.toInt() == deg) activeAccent else Color.Gray,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (wheelRange.toInt() == deg) FontWeight.Bold else FontWeight.Normal,
-                                    modifier = Modifier.clickable { wheelRange = deg.toFloat() }
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    // Max Lock Angle
-                    Column {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Full Steering Lock Angle:", color = Color.White, fontSize = 13.sp)
-                            Text("${maxAngle.toInt()}°", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                        Slider(
-                            value = maxAngle,
-                            onValueChange = { maxAngle = it },
-                            valueRange = 25f..90f,
-                            colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                        )
-                    }
-
-                    // Response Curve (Non-linearity)
-                    Column {
-                        val curveDesc = when {
-                            curvePower < 1.05f -> "Linear (1:1 Instant)"
-                            curvePower < 1.4f -> "Progressive (Stable Highway + Fast Turn)"
-                            else -> "Sharp Exponent"
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Steering Curve ($curveDesc):", color = Color.White, fontSize = 13.sp)
-                            Text(if (curvePower <= 1.05f) "1.00x (Linear)" else "${String.format("%.2f", curvePower)}x", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                        Slider(
-                            value = curvePower,
-                            onValueChange = { curvePower = it },
-                            valueRange = 1.0f..2.0f,
-                            colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                        )
-                    }
-                }
-
-                // Fast Steer Responsiveness (Adaptive 1-Euro Beta)
-                Column {
-                    val speedDesc = when {
-                        filterBeta < 0.06f -> "Damped (Smooth / Casual)"
-                        filterBeta < 0.16f -> "Ultra-Responsive (Zero Lag Flicks)"
-                        else -> "Instant Twitch (Esports)"
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Fast Steer Responsiveness ($speedDesc):", color = Color.White, fontSize = 13.sp)
-                        Text("${String.format("%.2f", filterBeta)}", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                    Slider(
-                        value = filterBeta,
-                        onValueChange = { filterBeta = it },
-                        valueRange = 0.02f..0.25f,
-                        colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                    )
-                    Text("Higher values eliminate trailing phase lag and overshoot during rapid steering flicks", color = Color.Gray, fontSize = 11.sp)
-                }
-
-                // Caster Centering Spring Assistance
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Caster Spring Assistance:", color = Color.White, fontSize = 13.sp)
-                        Text("${(casterSpring * 100).toInt()}%", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                    Slider(
-                        value = casterSpring,
-                        onValueChange = { casterSpring = it },
-                        valueRange = 0.0f..1.0f,
-                        colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                    )
-                    Text("Self-aligns the wheel toward center when cruising to eliminate forearm fatigue", color = Color.Gray, fontSize = 11.sp)
-                }
-
-                // Cockpit Cluster Illumination Theme
-                Column {
-                    Text("Cockpit Lighting Theme:", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        listOf(
-                            "SCANIA_AMBER" to "Scania",
-                            "VOLVO_CYAN" to "Volvo",
-                            "MERCEDES_GREEN" to "Mercedes",
-                            "DAF_WHITE" to "DAF"
-                        ).forEach { (key, label) ->
-                            val isSelected = clusterTheme == key
-                            val themeCol = getThemeAccent(key)
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(if (isSelected) themeCol else Color(0xFF101317))
-                                    .border(1.dp, if (isSelected) Color.White else CockpitBorder, RoundedCornerShape(6.dp))
-                                    .clickable { clusterTheme = key }
-                                    .padding(vertical = 6.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = label,
-                                    color = if (isSelected) Color.Black else Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Speedometer Unit
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Speedometer Unit", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text(if (useMph) "Miles per Hour (MPH)" else "Kilometers per Hour (KM/H)", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = useMph,
-                        onCheckedChange = { useMph = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Hand Tremor Smoothing (1-Euro filter)
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Resting Tremor Smoothing:", color = Color.White, fontSize = 13.sp)
-                        Text("${String.format("%.1f", minCutoff)}", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                    Slider(
-                        value = minCutoff,
-                        onValueChange = { minCutoff = it },
-                        valueRange = 0.4f..2.5f,
-                        colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                    )
-                }
-
-                // Invert Steering Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Invert Steering Direction", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Flips left/right turning axis", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = invertSteering,
-                        onCheckedChange = { invertSteering = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Force Feedback Rumble Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Force Feedback Rumble", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Vibrates phone on rumble strips & collisions", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = ffbEnabled,
-                        onCheckedChange = { ffbEnabled = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Procedural Mechanical Sound Effects Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Cockpit Audio Synthesis", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Relay tick-tock, air brake hiss, and shifter clicks", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = soundEnabled,
-                        onCheckedChange = { soundEnabled = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Auto-Cancelling Turn Indicators (ACTI) Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Auto-Cancelling Turn Stalks (ACTI)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Mechanical auto-cancel when wheel straightens past center", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = autoCancelBlinkers,
-                        onCheckedChange = { autoCancelBlinkers = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Continuous Steering Tension Micro-Haptics Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Virtual Steering Tension Haptics", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Micro-tactile detent notches every 15° of steering lock", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = steeringHapticTension,
-                        onCheckedChange = { steeringHapticTension = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Zero-Drift Gravity Anchor Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Zero-Drift Gravity Anchor", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Anchors steering zero-point to Earth's gravitational field to eliminate post-turn deflection", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = gravityAnchorEnabled,
-                        onCheckedChange = { gravityAnchorEnabled = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
-                    )
-                }
-
-                // Stationary Zero-Velocity Drift Bleed Sensitivity
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Stationary Recenter Drift Bleed:", color = Color.White, fontSize = 13.sp)
-                        Text("${String.format("%.1f", autoZeroRecenterSensitivity)}x", color = activeAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                    Slider(
-                        value = autoZeroRecenterSensitivity,
-                        onValueChange = { autoZeroRecenterSensitivity = it },
-                        valueRange = 0.5f..2.5f,
-                        colors = SliderDefaults.colors(thumbColor = activeAccent, activeTrackColor = activeAccent)
-                    )
-                    Text("Smoothly bleeds out virtual gyro deflection when holding wheel near center", color = Color.Gray, fontSize = 11.sp)
-                }
-
-                // Center Snap Assistance Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Hydraulic Center Snap Assistance", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Asymptotically snaps wheel straight out of turns within deadzone pocket", color = Color.Gray, fontSize = 11.sp)
-                    }
-                    Switch(
-                        checked = centerSnapAssistance,
-                        onCheckedChange = { centerSnapAssistance = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = activeAccent, checkedTrackColor = activeAccent.copy(alpha = 0.5f))
+                    Text(
+                        text = tab.title,
+                        color = if (selected) Color(0xFF0D1015) else TextBright,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.6.sp
                     )
                 }
             }
+        }
 
-            Spacer(modifier = Modifier.height(10.dp))
+        // Right Content Area + Fixed Bottom Bar
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .background(CockpitPanel)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            ) {
+                when (activeTab) {
+                    TuningTab.STEERING -> {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(24.dp)
+                        ) {
+                            // Left Column: Quick Preset | Wheel Range | Square Checkboxes
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                verticalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("QUICK PRESET", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        val presets = listOf(
+                                            "Highway" to {
+                                                wheelMode1to1 = true; wheelRange = 900f; deadzone = 0.5f
+                                                minCutoff = 1.0f; filterBeta = 0.03f; casterSpring = 0.20f
+                                                autoZeroRecenterSensitivity = 1.2f
+                                            },
+                                            "1:1" to {
+                                                wheelMode1to1 = true; wheelRange = 900f; deadzone = 0.5f
+                                                minCutoff = 1.3f; filterBeta = 0.02f; casterSpring = 0.0f
+                                                autoZeroRecenterSensitivity = 1.0f
+                                            },
+                                            "Yard" to {
+                                                wheelMode1to1 = true; wheelRange = 540f; deadzone = 0.2f
+                                                minCutoff = 1.8f; filterBeta = 0.12f; casterSpring = 0.0f
+                                                autoZeroRecenterSensitivity = 0.8f
+                                            }
+                                        )
+                                        presets.forEach { (name, apply) ->
+                                            val isCurrent = (name == "1:1" && wheelRange.toInt() == 900 && casterSpring == 0f) ||
+                                                            (name == "Highway" && wheelRange.toInt() == 900 && casterSpring > 0f) ||
+                                                            (name == "Yard" && wheelRange.toInt() == 540)
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(42.dp)
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(if (isCurrent) activeAccent else CockpitTile)
+                                                    .border(1.dp, if (isCurrent) activeAccent else CockpitBorder, RoundedCornerShape(10.dp))
+                                                    .clickable { apply() },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = name,
+                                                    color = if (isCurrent) Color(0xFF0D1015) else TextBright,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
 
-            // Fixed Action Bottom Bar
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("WHEEL RANGE", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        listOf(360, 540, 720, 900, 1080).forEach { deg ->
+                                            val selected = wheelRange.toInt() == deg
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(42.dp)
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(if (selected) activeAccent else CockpitTile)
+                                                    .border(1.dp, if (selected) activeAccent else CockpitBorder, RoundedCornerShape(10.dp))
+                                                    .clickable { wheelRange = deg.toFloat() },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "$deg",
+                                                    color = if (selected) Color(0xFF0D1015) else TextBright,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                SquareCheckboxRow(
+                                    label = "1:1 ETS2 wheel mode",
+                                    checked = wheelMode1to1,
+                                    accentColor = activeAccent,
+                                    onCheckedChange = { wheelMode1to1 = it }
+                                )
+
+                                SquareCheckboxRow(
+                                    label = "Invert steering",
+                                    checked = invertSteering,
+                                    accentColor = activeAccent,
+                                    onCheckedChange = { invertSteering = it }
+                                )
+                            }
+
+                            // Right Column: All 5 Sleek Circular-Knob Amber Sliders
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                verticalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                TuningSliderRow(
+                                    label = "Deadzone",
+                                    valueLabel = "${"%.1f".format(deadzone)}°",
+                                    value = deadzone,
+                                    range = 0f..5f,
+                                    accentColor = activeAccent,
+                                    onValueChange = { deadzone = it }
+                                )
+                                val tremorDisplay = ((2.5f - minCutoff) / 2.1f).coerceIn(0f, 1f)
+                                TuningSliderRow(
+                                    label = "Tremor smoothing",
+                                    valueLabel = "${"%.1f".format(tremorDisplay)}",
+                                    value = tremorDisplay,
+                                    range = 0f..1f,
+                                    accentColor = activeAccent,
+                                    onValueChange = { minCutoff = (2.5f - it * 2.1f).coerceIn(0.4f, 2.5f) }
+                                )
+                                TuningSliderRow(
+                                    label = "Fast-steer response",
+                                    valueLabel = "${"%.2f".format(filterBeta)}",
+                                    value = filterBeta,
+                                    range = 0.02f..0.25f,
+                                    accentColor = activeAccent,
+                                    onValueChange = { filterBeta = it }
+                                )
+                                TuningSliderRow(
+                                    label = "Caster self-centering",
+                                    valueLabel = "${(casterSpring * 100).toInt()}%",
+                                    value = casterSpring,
+                                    range = 0f..1f,
+                                    accentColor = activeAccent,
+                                    onValueChange = { casterSpring = it }
+                                )
+                                TuningSliderRow(
+                                    label = "Drift bleed",
+                                    valueLabel = "${"%.1f".format(autoZeroRecenterSensitivity)}x",
+                                    value = autoZeroRecenterSensitivity,
+                                    range = 0.5f..2.5f,
+                                    accentColor = activeAccent,
+                                    onValueChange = { autoZeroRecenterSensitivity = it }
+                                )
+                            }
+                        }
+                    }
+
+                    TuningTab.FEEDBACK -> {
+                        Column(
+                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            TuningToggleRow("Haptic feedback & confirm buzz", "0.4s hold buzz and tactile clicks", hapticEnabled, activeAccent) { hapticEnabled = it }
+                            TuningToggleRow("Force feedback rumble", "Vibrates on road bumps and lateral G spikes", ffbEnabled, activeAccent) { ffbEnabled = it }
+                            TuningToggleRow("Virtual steering tension detents", "Micro-ticks every 15° of wheel rotation", steeringHapticTension, activeAccent) { steeringHapticTension = it }
+                            TuningToggleRow("Cockpit audio synthesis", "Relay blinker tick-tock, air brake hiss, air horn", soundEnabled, activeAccent) { soundEnabled = it }
+                            TuningToggleRow("Auto-cancelling turn stalks", "Cancels indicator when wheel returns past center", autoCancelBlinkers, activeAccent) { autoCancelBlinkers = it }
+                            TuningToggleRow("Zero-drift gravity anchor", "Anchors horizon to prevent gyro drift", gravityAnchorEnabled, activeAccent) { gravityAnchorEnabled = it }
+                            TuningToggleRow("Hydraulic center snap", "Smoothly centers wheel inside deadzone pocket", centerSnapAssistance, activeAccent) { centerSnapAssistance = it }
+                        }
+                    }
+
+                    TuningTab.COCKPIT -> {
+                        Column(
+                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text("CLUSTER ACCENT COLOR", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                listOf(
+                                    "SCANIA_AMBER" to "Scania Amber",
+                                    "VOLVO_CYAN" to "Volvo Cyan",
+                                    "MERCEDES_GREEN" to "Mercedes Green",
+                                    "DAF_WHITE" to "DAF White"
+                                ).forEach { (key, title) ->
+                                    val selected = clusterTheme == key
+                                    val col = getThemeAccent(key)
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(44.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(if (selected) col else CockpitTile)
+                                            .border(1.dp, if (selected) col else CockpitBorder, RoundedCornerShape(10.dp))
+                                            .clickable { clusterTheme = key },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = title,
+                                            color = if (selected) Color(0xFF0D1015) else TextBright,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+
+                            TuningToggleRow(
+                                title = "Imperial Units (MPH)",
+                                subtitle = if (useMph) "Displaying speed in MPH" else "Displaying speed in KM/H",
+                                checked = useMph,
+                                accentColor = activeAccent,
+                                onCheckedChange = { useMph = it }
+                            )
+
+                            OutlinedButton(
+                                onClick = onResetPinnedSlot,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Reset Bottom Slot 5 to DIFF LOCK", color = TextBright)
+                            }
+                        }
+                    }
+
+                    TuningTab.CONNECTION -> {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text("WINDOWS PC TARGET", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                            OutlinedTextField(
+                                value = ipText,
+                                onValueChange = { ipText = it },
+                                label = { Text("PC IPv4 Address (Leave blank for Auto-Discovery)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = portText,
+                                onValueChange = { portText = it },
+                                label = { Text("UDP Control Port (Default: 5005)") },
+                                singleLine = true,
+                                modifier = Modifier.width(240.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Bottom Action Bar: Cancel + Save & apply
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(58.dp)
+                    .border(1.dp, CockpitBorder)
+                    .padding(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = onDismiss) {
-                    Text("Cancel", color = Color.White, fontSize = 14.sp)
+                    Text("Cancel", color = TextBright, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(16.dp))
                 Button(
                     onClick = {
-                        val port = portText.toIntOrNull() ?: 5005
                         onSave(
                             currentSettings.copy(
                                 serverIp = ipText.trim(),
-                                serverPort = port,
+                                serverPort = portText.toIntOrNull() ?: 5005,
                                 steeringDeadzoneDeg = deadzone,
                                 steeringMaxAngleDeg = maxAngle,
                                 steeringCurvePower = curvePower,
@@ -554,6 +406,7 @@ fun SettingsDialog(
                                 casterSpringStrength = casterSpring,
                                 clusterTheme = clusterTheme,
                                 speedUnitMph = useMph,
+                                hapticFeedbackEnabled = hapticEnabled,
                                 forceFeedbackEnabled = ffbEnabled,
                                 soundEffectsEnabled = soundEnabled,
                                 autoCancelBlinkers = autoCancelBlinkers,
@@ -565,12 +418,146 @@ fun SettingsDialog(
                         )
                         onDismiss()
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = activeAccent),
+                    modifier = Modifier.height(42.dp)
                 ) {
-                    Text("Save & Apply", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Save & apply", color = Color(0xFF0D1015), fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
 }
+
+@Composable
+private fun SquareCheckboxRow(
+    label: String,
+    checked: Boolean,
+    accentColor: Color,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = TextBright, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (checked) accentColor else Color.White),
+            contentAlignment = Alignment.Center
+        ) {
+            if (checked) {
+                Canvas(modifier = Modifier.size(14.dp)) {
+                    val check = Path().apply {
+                        moveTo(size.width * 0.18f, size.height * 0.52f)
+                        lineTo(size.width * 0.42f, size.height * 0.76f)
+                        lineTo(size.width * 0.84f, size.height * 0.26f)
+                    }
+                    drawPath(
+                        path = check,
+                        color = Color(0xFF0D1015),
+                        style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TuningSliderRow(
+    label: String,
+    valueLabel: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    accentColor: Color,
+    onValueChange: (Float) -> Unit
+) {
+    val norm = ((value - range.start) / (range.endInclusive - range.start)).coerceIn(0f, 1f)
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, color = TextBright, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(valueLabel, color = accentColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(22.dp)
+                .pointerInput(range) {
+                    detectTapGestures { offset ->
+                        val frac = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        onValueChange(range.start + frac * (range.endInclusive - range.start))
+                    }
+                }
+                .pointerInput(range) {
+                    detectDragGestures { change, _ ->
+                        change.consume()
+                        val frac = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        onValueChange(range.start + frac * (range.endInclusive - range.start))
+                    }
+                }
+        ) {
+            val trackH = 6.dp.toPx()
+            val knobR = 8.dp.toPx()
+            val padX = knobR
+            val usableW = (size.width - padX * 2f).coerceAtLeast(1f)
+            val cy = size.height / 2f
+            val knobX = padX + norm * usableW
+
+            drawRoundRect(
+                color = CockpitBorder,
+                topLeft = Offset(padX, cy - trackH / 2f),
+                size = Size(usableW, trackH),
+                cornerRadius = CornerRadius(trackH / 2f)
+            )
+            drawRoundRect(
+                color = accentColor,
+                topLeft = Offset(padX, cy - trackH / 2f),
+                size = Size((knobX - padX).coerceAtLeast(0f), trackH),
+                cornerRadius = CornerRadius(trackH / 2f)
+            )
+            drawCircle(
+                color = accentColor,
+                radius = knobR,
+                center = Offset(knobX, cy)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TuningToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    accentColor: Color,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = TextBright, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, color = TextMuted, fontSize = 11.sp)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedThumbColor = accentColor, checkedTrackColor = accentColor.copy(alpha = 0.45f))
+        )
+    }
 }
