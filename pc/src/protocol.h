@@ -3,63 +3,114 @@
 #include <cstdint>
 #include <cstddef>
 
-constexpr size_t CONTROLLER_PACKET_SIZE = 12;
-constexpr size_t RUMBLE_PACKET_SIZE = 4;
-constexpr uint8_t RUMBLE_HEADER = 0xFB;
+constexpr uint16_t PROTOCOL_MAGIC   = 0x4532; // "E2"
+constexpr uint8_t  PROTOCOL_VERSION = 2;
 
-constexpr size_t TELEMETRY_PACKET_SIZE = 33;
-constexpr uint8_t TELEMETRY_HEADER = 0xFC;
+constexpr uint16_t PORT_CONTROL     = 5005;
+constexpr uint16_t PORT_BEACON      = 5006;
+constexpr const char* BEACON_MSG    = "ETS2_COCKPIT_V2";
 
-struct ControllerState {
-    uint16_t sequenceId;
-    uint16_t buttons;
-    float steering;     // -1.0f (full left) to +1.0f (full right)
-    float throttle;     //  0.0f (idle) to 1.0f (full throttle)
-    float brake;        //  0.0f (idle) to 1.0f (full brake)
-    float lookX;        // -1.0f (look left) to +1.0f (look right)
-    uint8_t flags;
+// Uplink flag bits (Phone -> PC)
+constexpr uint8_t UPLINK_FLAG_COACH_SMOOTH_MODE = (1 << 0);
+constexpr uint8_t UPLINK_FLAG_LOOK_AUTOCENTER   = (1 << 1);
+constexpr uint8_t UPLINK_FLAG_PING_REQUEST      = (1 << 2);
+
+// Downlink dashboardFlags bits (PC -> Phone)
+constexpr uint16_t DASH_LEFT_BLINKER      = (1 << 0);
+constexpr uint16_t DASH_RIGHT_BLINKER     = (1 << 1);
+constexpr uint16_t DASH_HAZARD            = (1 << 2);
+constexpr uint16_t DASH_PARK_BRAKE        = (1 << 3);
+constexpr uint16_t DASH_ENGINE_RUNNING    = (1 << 4);
+constexpr uint16_t DASH_LOW_AIR_WARN      = (1 << 5);
+constexpr uint16_t DASH_CRUISE_ACTIVE     = (1 << 6);
+constexpr uint16_t DASH_RETARDER_ACTIVE   = (1 << 7);
+constexpr uint16_t DASH_ENGINE_BRK_ACTIVE = (1 << 8);
+constexpr uint16_t DASH_LOW_BEAMS         = (1 << 9);
+constexpr uint16_t DASH_HIGH_BEAMS        = (1 << 10);
+constexpr uint16_t DASH_BEACONS           = (1 << 11);
+constexpr uint16_t DASH_WIPERS_ACTIVE     = (1 << 12);
+constexpr uint16_t DASH_DIFF_LOCK         = (1 << 13);
+constexpr uint16_t DASH_TRUCK_LIFT_AXLE   = (1 << 14);
+constexpr uint16_t DASH_TRAILER_LIFT_AXLE = (1 << 15);
+
+// Downlink safetyFlags bits (PC -> Phone)
+constexpr uint8_t SAFETY_TRAILER_CONNECTED = (1 << 0);
+constexpr uint8_t SAFETY_BLIND_SPOT_LEFT   = (1 << 1);
+constexpr uint8_t SAFETY_BLIND_SPOT_RIGHT  = (1 << 2);
+constexpr uint8_t SAFETY_COLLISION_WARN    = (1 << 3);
+constexpr uint8_t SAFETY_LKA_ACTIVE        = (1 << 4);
+constexpr uint8_t SAFETY_AUTO_TRANSMISSION = (1 << 5);
+
+#pragma pack(push, 1)
+
+// 29-byte Phone -> PC Control Packet
+struct PhoneControlPacket {
+    uint16_t magic;             // 0x4532 (2)
+    uint8_t  version;           // 2      (1)
+    uint8_t  flags;             //        (1)
+    uint16_t sequenceId;        //        (2)
+    uint16_t clientTimestampMs; //        (2)
+    uint64_t buttonMask;        //        (8) -> 64 independent simultaneous buttons
+    int16_t  steering;          //        (2) -> -32767 .. +32767
+    uint16_t throttle;          //        (2) -> 0 .. 65535
+    uint16_t brake;             //        (2) -> 0 .. 65535
+    uint16_t clutch;            //        (2) -> 0 .. 65535
+    int16_t  lookX;             //        (2) -> -32767 .. +32767
+    int16_t  lookY;             //        (2) -> -32767 .. +32767
+    uint8_t  checksum;          //        (1) -> XOR of bytes [0..27]
 };
 
-// Force feedback payload sent from PC to Phone
-struct RumbleState {
-    uint8_t largeMotor; // Heavy motor: engine vibration, curbs, bumps (0 - 255)
-    uint8_t smallMotor; // Fine motor: rumble strips, road textures (0 - 255)
-};
-
-// Real-time telemetry streamed from PC to Phone at 20Hz (32 bytes)
+// 42-byte PC -> Phone Telemetry + Haptic Packet
 struct TruckTelemetryPacket {
-    uint8_t header;         // 0xFC (TELEMETRY_HEADER)
-    float speedKmh;         // Truck road speed in km/h
-    float engineRpm;        // Current engine RPM
-    float maxRpm;           // Tachometer redline limit (e.g. 2500)
-    int8_t gear;            // Current gear (-1 = Reverse, 0 = Neutral, 1..16 = Forward)
-    uint8_t fuelPercent;    // 0..100%
-    float airPressureBar;   // Brake air pressure (bar)
-    uint8_t dashboardFlags; // Bit 0: Left Blinker, Bit 1: Right Blinker, Bit 2: Hazard, 
-                            // Bit 3: Parking Brake, Bit 4: Engine Running, Bit 5: Low Air Warning,
-                            // Bit 6: Cruise Control
-    uint8_t auxStateFlags;  // NEW: Bit 0: Diff Lock, Bit 1: Lift Axle, Bit 2: Trailer Hook,
-                            //      Bit 3: High Beams, Bit 4: Beacons, Bit 5: Wipers active
-    uint16_t pingTimestamp; // Heartbeat timestamp / echo for RTT ping measurement
-    uint8_t speedLimitKmh;  // Legal road speed limit in km/h (0 = none)
-    uint16_t routeDistanceKm; // GPS remaining distance in km
-    uint16_t routeTimeMin;  // Estimated travel time in minutes
-    uint8_t truckDamagePct; // Overall truck wear / damage percentage (0..100%)
-    uint8_t cruiseSpeedKmh; // Target cruise control speed in km/h
-    uint8_t forwardGears;   // Total forward gears count (e.g. 12, 14, 16)
-    uint8_t shifterFlags;   // Bit 0: 1 = automatic / arcade, 0 = manual / sequential
-    uint8_t checksum;       // XOR checksum
+    uint16_t magic;             // 0x4532 (2)
+    uint8_t  version;           // 2      (1)
+    uint8_t  safetyFlags;       //        (1)
+    float    speedKmh;          //        (4)
+    float    engineRpm;         //        (4)
+    float    maxRpm;            //        (4)
+    float    airPressureBar;    //        (4)
+    int8_t   gear;              //        (1)
+    uint8_t  forwardGears;      //        (1)
+    uint8_t  fuelPercent;       //        (1)
+    uint8_t  adbluePercent;     //        (1)
+    uint8_t  speedLimitKmh;     //        (1)
+    uint8_t  cruiseSpeedKmh;    //        (1)
+    uint8_t  truckDamagePct;    //        (1)
+    uint8_t  retarderLevel;     //        (1)
+    uint8_t  accDistanceLevel;  //        (1)
+    int8_t   lateralG100;       //        (1) -> Lateral G * 100 (-127..+127)
+    int8_t   longitudinalG100;  //        (1) -> Longitudinal G * 100 (-127..+127)
+    uint8_t  rumbleLarge;       //        (1)
+    uint8_t  rumbleSmall;       //        (1)
+    uint16_t dashboardFlags;    //        (2)
+    uint16_t routeDistanceKm;   //        (2)
+    uint16_t routeTimeMin;      //        (2)
+    uint16_t echoTimestampMs;   //        (2)
+    uint8_t  checksum;          //        (1) -> XOR of bytes [0..40]
 };
 
-// Decode a raw 12-byte datagram from the phone.
-// Returns true if length and XOR checksum are valid.
-bool decodeControllerPacket(const uint8_t* data, size_t length, ControllerState* outState);
+#pragma pack(pop)
 
-// Pack a 4-byte rumble datagram to send to the phone.
-void encodeRumblePacket(const RumbleState& rumble, uint8_t* outBuffer);
+static_assert(sizeof(PhoneControlPacket) == 29, "PhoneControlPacket must be 29 bytes");
+static_assert(sizeof(TruckTelemetryPacket) == 42, "TruckTelemetryPacket must be 42 bytes");
 
-// Pack a 32-byte telemetry datagram to send to the phone.
-void encodeTelemetryPacket(const TruckTelemetryPacket& telem, uint8_t* outBuffer);
+inline uint8_t computeXorChecksum(const uint8_t* data, size_t len) {
+    uint8_t cs = 0;
+    for (size_t i = 0; i < len; ++i) cs ^= data[i];
+    return cs;
+}
 
-// Decode a 32-byte telemetry datagram on client.
-bool decodeTelemetryPacket(const uint8_t* data, size_t length, TruckTelemetryPacket* outTelem);
+inline bool validateControlPacket(const uint8_t* buf, size_t len, PhoneControlPacket* out) {
+    if (len != sizeof(PhoneControlPacket) || !buf || !out) return false;
+    const auto* pkt = reinterpret_cast<const PhoneControlPacket*>(buf);
+    if (pkt->magic != PROTOCOL_MAGIC || pkt->version != PROTOCOL_VERSION) return false;
+    if (computeXorChecksum(buf, sizeof(PhoneControlPacket) - 1) != pkt->checksum) return false;
+    *out = *pkt;
+    return true;
+}
+
+inline void finalizeTelemetryPacket(TruckTelemetryPacket* pkt) {
+    pkt->magic = PROTOCOL_MAGIC;
+    pkt->version = PROTOCOL_VERSION;
+    pkt->checksum = computeXorChecksum(reinterpret_cast<const uint8_t*>(pkt), sizeof(TruckTelemetryPacket) - 1);
+}

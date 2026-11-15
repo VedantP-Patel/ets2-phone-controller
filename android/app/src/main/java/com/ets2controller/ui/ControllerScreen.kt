@@ -3,190 +3,262 @@ package com.ets2controller.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ets2controller.config.ControllerSettings
-import com.ets2controller.network.TruckTelemetry
+import com.ets2controller.network.TruckTelemetryV2
 import com.ets2controller.ui.theme.*
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
 
 @Composable
 fun ControllerScreen(
     isConnected: Boolean,
     connectedIp: String,
     packetsPerSec: Int,
-    steeringValue: Float,
-    rawAngleDeg: Float,
+    savedManualIp: String,
+    onSetManualIp: (String) -> Unit,
+    steeringProvider: () -> Float,
+    rawAngleProvider: () -> Float,
     throttle: Float,
     brake: Float,
-    buttonMask: Int,
+    clutch: Float,
+    buttonMask: Long,
+    coachSmoothMode: Boolean,
     settings: ControllerSettings,
-    telemetry: TruckTelemetry,
+    telemetry: TruckTelemetryV2,
     onThrottleChange: (Float) -> Unit,
     onBrakeChange: (Float) -> Unit,
+    onClutchChange: (Float) -> Unit,
     onButtonStateChange: (Int, Boolean) -> Unit,
+    onPulseBit: (Int) -> Unit,
+    onToggleCoachMode: () -> Unit,
     onCalibrateClick: () -> Unit,
     onSaveSettings: (ControllerSettings) -> Unit,
-    onAirHornBlast: () -> Unit = {},
-    onLookXChange: (Float) -> Unit = {}
+    onLookChange: (Float, Float) -> Unit
 ) {
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showAuxSwitchboard by remember { mutableStateOf(false) }
+    var showConnectionDialog by remember { mutableStateOf(false) }
     val activeAccent = getThemeAccent(settings.clusterTheme)
 
-    // Left Outer Column: Left Turn Stalk, Lights (Tap=Cycle L, SwipeUp=Hi-Beam K), Horn (Hold=Horn, SwipeUp=Air Horn), Park Brake
-    val leftOuterButtons = listOf(
-        ActionButtonDef(bitIndex = 4, icon = "TURN_LEFT", label = "L. TURN", customColor = Color(0xFF00E676)),
-        ActionButtonDef(
-            bitIndex = 2,
-            icon = "💡",
-            label = "LIGHTS ↕",
-            swipeUpBit = 21,   // Swipe Up   = High Beams ('K')
-            swipeDownBit = 22, // Swipe Down = Roof Beacons ('O')
-            longPressBit = 35  // Hold       = Flash High Beams / Light Horn ('J')!
-        ),
-        ActionButtonDef(
-            bitIndex = 0,
-            icon = "🔊",
-            label = "HORN / AIR",
-            isPrimary = true,
-            swipeUpBit = 23    // Swipe Up = Roof Air Horn ('N')
-        ),
-        ActionButtonDef(bitIndex = 6, icon = "🅿️", label = "PARK BRK", isWarning = true)
-    )
-
-    // Left Inner Column: Right Turn Stalk (beside L. TURN!), Retarder Stalk, Cruise Stalk, Engine/Enter
-    val leftInnerButtons = listOf(
-        ActionButtonDef(bitIndex = 5, icon = "TURN_RIGHT", label = "R. TURN", customColor = Color(0xFF00E676)),
-        ActionButtonDef(
-            bitIndex = 7,
-            icon = "RETARDER",
-            label = "RETARDER ↕",
-            customColor = Color(0xFFFF9100),
-            swipeUpBit = 24,   // Swipe Up   = Increase Retarder (;)
-            swipeDownBit = 25  // Swipe Down = Decrease Retarder (')
-        ),
-        ActionButtonDef(
-            bitIndex = 9,
-            icon = "⏸",
-            label = "CRUISE ↕",
-            customColor = Color(0xFF2979FF),
-            swipeUpBit = 26,   // Swipe Up   = Cruise +5 km/h
-            swipeDownBit = 27, // Swipe Down = Cruise -5 km/h
-            longPressBit = 28  // Hold       = Cruise Resume
-        ),
-        ActionButtonDef(
-            bitIndex = 30,     // Primary Tap = ENTER (Gas/Toll/Ferry/Job Confirm!)
-            icon = "⏎",
-            label = "ENTER / ENG",
-            customColor = Color(0xFF00E676),
-            longPressBit = 1   // Hold 0.4s  = Start/Stop Engine ('E')
+    val leftOuterButtons = remember {
+        listOf(
+            ActionButtonDef(bitIndex = 4, icon = "TURN_LEFT", label = "L. TURN", customColor = Color(0xFF00E676)),
+            ActionButtonDef(
+                bitIndex = 2,
+                icon = "☀",
+                label = "LIGHTS ↕",
+                swipeUpBit = 21,
+                swipeDownBit = 22,
+                longPressBit = 35
+            ),
+            ActionButtonDef(
+                bitIndex = 0,
+                icon = "((!))",
+                label = "HORN / AIR",
+                isPrimary = true,
+                swipeUpBit = 23
+            ),
+            ActionButtonDef(bitIndex = 6, icon = "(P)", label = "PARK BRK", isWarning = true)
         )
-    )
+    }
 
-    // Center Bottom Bar: Quick Utility & Camera Views (Tap=Interior Cam 1, SwipeUp=Chase Cam 2, SwipeDown=Window Peek Cam 5)
-    val centerUtilityButtons = listOf(
-        ActionButtonDef(bitIndex = 3, icon = "⚠️", label = "HAZARD", isWarning = true),
-        ActionButtonDef(
-            bitIndex = 8,
-            icon = "🗺",
-            label = "MAP / GPS ↕",
-            swipeUpBit = 29,   // Swipe Up   = Dash Computer ('I')
-            swipeDownBit = 31, // Swipe Down = Job & Cargo Info ('F6')
-            longPressBit = 42  // Hold       = Full World Map ('M')!
-        ),
-        ActionButtonDef(bitIndex = 12, icon = "WIPER", label = "WIPERS"),
-        ActionButtonDef(
-            bitIndex = 13,
-            icon = "📷",
-            label = "CAM ↕",
-            swipeUpBit = 34,   // Swipe Up   = Exterior Chase Cam ('2')
-            swipeDownBit = 33, // Swipe Down = Lean Out Window Reverse Cam ('5')
-            longPressBit = 37  // Hold       = Top-Down Bird's-Eye Parking Cam ('3')!
-        ),
-        ActionButtonDef(bitIndex = -2, icon = "🎛️", label = "SWITCHES", isPrimary = true)
-    )
+    val leftInnerButtons = remember {
+        listOf(
+            ActionButtonDef(bitIndex = 5, icon = "TURN_RIGHT", label = "R. TURN", customColor = Color(0xFF00E676)),
+            ActionButtonDef(
+                bitIndex = 7,
+                icon = "RETARDER",
+                label = "RETARDER ↕",
+                customColor = Color(0xFFFF9100),
+                swipeUpBit = 24,
+                swipeDownBit = 25
+            ),
+            ActionButtonDef(
+                bitIndex = 9,
+                icon = "CC",
+                label = "CRUISE ↕",
+                customColor = Color(0xFF2979FF),
+                swipeUpBit = 26,
+                swipeDownBit = 27,
+                longPressBit = 28
+            ),
+            ActionButtonDef(
+                bitIndex = 30,
+                icon = "⏎",
+                label = "ENTER / ENG",
+                customColor = Color(0xFF00E676),
+                longPressBit = 1
+            )
+        )
+    }
 
-    // Transmission gear buttons (right of wheel, left of pedals)
-    val gearButtons = listOf(
-        ActionButtonDef(bitIndex = 10, icon = "🔼", label = "SHIFT UP", isPrimary = true),
-        ActionButtonDef(
-            bitIndex = 17,
-            icon = "N",
-            label = "NEUTRAL",
-            longPressBit = 18  // Hold Neutral = Toggle Diff Lock ('V') for heavy mud/quarries!
-        ),
-        ActionButtonDef(bitIndex = 11, icon = "🔽", label = "SHIFT DN", isPrimary = true)
-    )
+    val centerUtilityButtons = remember {
+        listOf(
+            ActionButtonDef(bitIndex = 3, icon = "▲", label = "HAZARD", isWarning = true),
+            ActionButtonDef(
+                bitIndex = 8,
+                icon = "GPS",
+                label = "NAV / MAP ↕",
+                swipeUpBit = 29,
+                swipeDownBit = 31,
+                longPressBit = 42
+            ),
+            ActionButtonDef(
+                bitIndex = 12,
+                icon = "WIPER",
+                label = "WIPERS ↕",
+                swipeDownBit = 36
+            ),
+            ActionButtonDef(
+                bitIndex = 13,
+                icon = "CAM",
+                label = "VIEW ↕",
+                swipeUpBit = 34,
+                swipeDownBit = 33,
+                longPressBit = 37
+            ),
+            ActionButtonDef(bitIndex = -2, icon = "AUX", label = "SWITCHES", isPrimary = true)
+        )
+    }
+
+    val gearButtons = remember {
+        listOf(
+            ActionButtonDef(bitIndex = 10, icon = "▲", label = "SHIFT UP", isPrimary = true),
+            ActionButtonDef(
+                bitIndex = 17,
+                icon = "N",
+                label = "NEUTRAL",
+                longPressBit = 18
+            ),
+            ActionButtonDef(bitIndex = 11, icon = "▼", label = "SHIFT DN", isPrimary = true)
+        )
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(DarkBackground)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
+        if (telemetry.isBlindSpotLeft) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(5.dp)
+                    .fillMaxHeight(0.75f)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFFFF1744))
+            )
+        }
+        if (telemetry.isBlindSpotRight) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(5.dp)
+                    .fillMaxHeight(0.75f)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFFFF1744))
+            )
+        }
+
         Column(modifier = Modifier.fillMaxSize()) {
-            // Top HUD Bar with Network Health and Ping Monitor
+            // Top Telemetry & Link Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(30.dp),
+                    .height(28.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Connection status chip with RTT ping latency
+                // Tap-to-Configure Connection Pill
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .background(CockpitPanel)
-                        .border(1.dp, CockpitBorder, RoundedCornerShape(12.dp))
+                        .border(
+                            1.dp,
+                            if (isConnected) ConnectedGreen.copy(alpha = 0.5f) else CockpitBorder,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { showConnectionDialog = true }
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
-                    val pingColor = when {
-                        !isConnected -> DisconnectedRed
-                        telemetry.roundTripPingMs < 20 -> ConnectedGreen
-                        telemetry.roundTripPingMs < 60 -> Color(0xFFFFA726)
+                    val statusColor = when {
+                        isConnected && telemetry.roundTripPingMs < 25 -> ConnectedGreen
+                        isConnected -> Color(0xFFFFA726)
+                        connectedIp.isNotEmpty() -> Color(0xFFFFA726)
                         else -> DisconnectedRed
                     }
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(pingColor)
-                    )
+                    Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(statusColor))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (isConnected) "Connected: $connectedIp ($packetsPerSec pps | ${telemetry.roundTripPingMs}ms)" 
-                               else "Searching for PC beacon...",
-                        color = if (isConnected) Color.White else TextMuted,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
+                        text = when {
+                            isConnected -> "LINKED: $connectedIp  |  ${packetsPerSec}Hz  |  ${telemetry.roundTripPingMs}ms"
+                            connectedIp.isNotEmpty() -> "TARGET: $connectedIp (WAITING FOR ETS2... TAP FOR IP)"
+                            else -> "SCANNING LAN... (TAP TO ENTER PC IP)"
+                        },
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
                     )
                 }
 
-                // Settings button
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(CockpitPanel)
-                        .border(1.dp, CockpitBorder, CircleShape)
-                        .clickable { showSettingsDialog = true },
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("⚙️", fontSize = 14.sp)
+                    val gPeak = maxOf(abs(telemetry.lateralG), abs(telemetry.longitudinalG))
+                    val gColor = when {
+                        gPeak > 0.30f -> Color(0xFFFF1744)
+                        gPeak > 0.20f -> Color(0xFFFF9100)
+                        else -> ConnectedGreen
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (coachSmoothMode) activeAccent.copy(alpha = 0.2f) else CockpitPanel)
+                            .border(1.dp, if (coachSmoothMode) activeAccent else CockpitBorder, RoundedCornerShape(8.dp))
+                            .clickable { onToggleCoachMode() }
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = if (coachSmoothMode) "COACH SMOOTH  ${"%.2f".format(gPeak)}G" else "TRUCK STD  ${"%.2f".format(gPeak)}G",
+                            color = gColor,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(CockpitPanel)
+                            .border(1.dp, CockpitBorder, RoundedCornerShape(8.dp))
+                            .clickable { showSettingsDialog = true }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("SETUP", color = activeAccent, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold)
+                    }
                 }
             }
 
@@ -200,27 +272,29 @@ fun ControllerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Left Column 1 (4 buttons)
+                var outerMask = buttonMask.toInt()
+                if (telemetry.isParkBrake) outerMask = outerMask or (1 shl 6)
                 ButtonColumn(
                     buttons = leftOuterButtons,
-                    activeMask = buttonMask,
+                    activeMask = outerMask,
                     onPressStateChange = onButtonStateChange,
-                    modifier = Modifier.width(84.dp)
+                    modifier = Modifier.width(82.dp)
                 )
 
                 Spacer(modifier = Modifier.width(4.dp))
 
-                // Left Column 2 (4 buttons)
-                val isHighBeamOn = (telemetry.auxStateFlags and (1 shl 3)) != 0
-                val innerMask = if (isHighBeamOn) (buttonMask or (1 shl 21)) else buttonMask
+                var innerMask = buttonMask.toInt()
+                if (telemetry.isHighBeams) innerMask = innerMask or (1 shl 21)
+                if (telemetry.isRetarderActive) innerMask = innerMask or (1 shl 7)
+                if (telemetry.isCruiseActive) innerMask = innerMask or (1 shl 9)
                 ButtonColumn(
                     buttons = leftInnerButtons,
                     activeMask = innerMask,
                     onPressStateChange = onButtonStateChange,
-                    modifier = Modifier.width(84.dp)
+                    modifier = Modifier.width(82.dp)
                 )
 
-                // Center Column: Dashboard Gauge Cluster + Steering Wheel Visualizer + Bottom Utilities
+                // Center Column: Digital Instrument Cluster + Rotating Truck Wheel + Bottom Utility Row
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -228,49 +302,50 @@ fun ControllerScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // Live Digital Cockpit Telemetry Cluster + Cabin Look Trackpad
-                    var lookOffset by remember { mutableFloatStateOf(0f) }
+                    var lookXOffset by remember { mutableFloatStateOf(0f) }
+                    var lookYOffset by remember { mutableFloatStateOf(0f) }
+
                     DashboardGauges(
                         telemetry = telemetry,
                         useMph = settings.speedUnitMph,
                         accentColor = activeAccent,
                         modifier = Modifier
-                            .fillMaxWidth(0.96f)
+                            .fillMaxWidth(0.97f)
                             .pointerInput(Unit) {
-                                detectHorizontalDragGestures(
+                                detectDragGestures(
                                     onDragEnd = {
-                                        lookOffset = 0f
-                                        onLookXChange(0f)
+                                        lookXOffset = 0f
+                                        lookYOffset = 0f
+                                        onLookChange(0f, 0f)
                                     },
                                     onDragCancel = {
-                                        lookOffset = 0f
-                                        onLookXChange(0f)
+                                        lookXOffset = 0f
+                                        lookYOffset = 0f
+                                        onLookChange(0f, 0f)
                                     },
-                                    onHorizontalDrag = { change, dragAmount ->
+                                    onDrag = { change, drag ->
                                         change.consume()
-                                        val maxPx = size.width * 0.35f
-                                        lookOffset = (lookOffset + dragAmount / maxPx).coerceIn(-1f, 1f)
-                                        onLookXChange(lookOffset)
+                                        lookXOffset = (lookXOffset + drag.x / (size.width * 0.35f)).coerceIn(-1f, 1f)
+                                        lookYOffset = (lookYOffset - drag.y / (size.height * 0.50f)).coerceIn(-1f, 1f)
+                                        onLookChange(lookXOffset, lookYOffset)
                                     }
                                 )
                             }
                     )
 
-                    // Steering Wheel Visualizer
                     SteeringVisual(
-                        steeringValue = steeringValue,
-                        rawAngleDeg = rawAngleDeg,
+                        steeringProvider = steeringProvider,
+                        rawAngleProvider = rawAngleProvider,
                         clusterTheme = settings.clusterTheme,
                         onCalibrateClick = onCalibrateClick,
                         modifier = Modifier.weight(1f)
                     )
 
-                    // Bottom horizontal bar of action buttons
                     Row(
                         modifier = Modifier
-                            .fillMaxWidth(0.96f)
-                            .height(46.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            .fillMaxWidth(0.97f)
+                            .height(44.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         centerUtilityButtons.forEach { btn ->
                             if (btn.bitIndex == -2) {
@@ -280,26 +355,24 @@ fun ControllerScreen(
                                     onPressStateChange = { _, isPressed ->
                                         if (isPressed) showAuxSwitchboard = !showAuxSwitchboard
                                     },
-                                    modifier = Modifier
-                                        .weight(1.1f)
-                                        .fillMaxHeight()
+                                    modifier = Modifier.weight(1.1f).fillMaxHeight()
                                 )
                             } else {
-                                val isPressed = btn.bitIndex in 0..30 && (buttonMask and (1 shl btn.bitIndex)) != 0
+                                val telemLit = (btn.bitIndex == 3 && telemetry.isHazard) ||
+                                    (btn.bitIndex == 12 && telemetry.isWipersActive)
+                                val isPressed = telemLit || (btn.bitIndex in 0..63 && ((buttonMask shr btn.bitIndex) and 1L) != 0L)
                                 CockpitButton(
                                     def = btn,
                                     isPressed = isPressed,
                                     onPressStateChange = onButtonStateChange,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
+                                    modifier = Modifier.weight(1f).fillMaxHeight()
                                 )
                             }
                         }
                     }
                 }
 
-                // Right section: In-Cabin Radio Unit (top) + Gear Shift & Pedals (bottom)
+                // Right Section: Radio Module + Sequential Shifter + 3 Pedals
                 Column(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -307,88 +380,73 @@ fun ControllerScreen(
                     verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.End
                 ) {
-                    // Cockpit Truck Radio Player Widget (positioned above pedals)
                     Row(
                         modifier = Modifier
-                            .width(248.dp)
-                            .height(52.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .width(266.dp)
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(8.dp))
                             .background(CockpitPanel)
-                            .border(1.dp, CockpitBorder, RoundedCornerShape(10.dp))
+                            .border(1.dp, CockpitBorder, RoundedCornerShape(8.dp))
                             .padding(horizontal = 6.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(end = 2.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("📻", fontSize = 11.sp)
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("RADIO", color = activeAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Text("R / PGDN", color = Color.Gray, fontSize = 8.sp)
+                        Column(modifier = Modifier.padding(end = 2.dp)) {
+                            Text("AUDIO", color = activeAccent, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            Text("CAB DECK", color = Color.Gray, fontSize = 7.sp, fontWeight = FontWeight.Bold)
                         }
 
-                        // Prev Favorite Station (Page Up)
                         CockpitButton(
-                            def = ActionButtonDef(bitIndex = 16, icon = "⏮", label = "PREV"),
-                            isPressed = (buttonMask and (1 shl 16)) != 0,
+                            def = ActionButtonDef(bitIndex = 16, icon = "◀◀", label = "PREV"),
+                            isPressed = ((buttonMask shr 16) and 1L) != 0L,
                             onPressStateChange = onButtonStateChange,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
+                            modifier = Modifier.weight(1f).fillMaxHeight()
                         )
 
-                        // Radio Toggle / Audio Player (Key R)
                         CockpitButton(
-                            def = ActionButtonDef(bitIndex = 14, icon = "📻", label = "RADIO", isPrimary = true),
-                            isPressed = (buttonMask and (1 shl 14)) != 0,
+                            def = ActionButtonDef(bitIndex = 14, icon = "FM", label = "RADIO", isPrimary = true),
+                            isPressed = ((buttonMask shr 14) and 1L) != 0L,
                             onPressStateChange = onButtonStateChange,
-                            modifier = Modifier
-                                .weight(1.2f)
-                                .fillMaxHeight()
+                            modifier = Modifier.weight(1.2f).fillMaxHeight()
                         )
 
-                        // Next Favorite Station (Page Down)
                         CockpitButton(
-                            def = ActionButtonDef(bitIndex = 15, icon = "⏭", label = "NEXT"),
-                            isPressed = (buttonMask and (1 shl 15)) != 0,
+                            def = ActionButtonDef(bitIndex = 15, icon = "▶▶", label = "NEXT"),
+                            isPressed = ((buttonMask shr 15) and 1L) != 0L,
                             onPressStateChange = onButtonStateChange,
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
+                            modifier = Modifier.weight(1f).fillMaxHeight()
                         )
                     }
 
-                    // Bottom Row: Gear Shift + Pedals
-                    Row(
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        // Sequential Gear Up/Down Column
+                    Row(verticalAlignment = Alignment.Bottom) {
                         Column(
                             modifier = Modifier
-                                .width(74.dp)
+                                .width(68.dp)
                                 .height(185.dp),
                             verticalArrangement = Arrangement.SpaceBetween
                         ) {
                             gearButtons.forEach { btn ->
-                                val isPressed = btn.bitIndex in 0..30 && (buttonMask and (1 shl btn.bitIndex)) != 0
+                                val isPressed = btn.bitIndex in 0..63 && ((buttonMask shr btn.bitIndex) and 1L) != 0L
                                 CockpitButton(
                                     def = btn,
                                     isPressed = isPressed,
                                     onPressStateChange = onButtonStateChange,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                        .padding(vertical = 2.dp)
+                                    modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 2.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
 
-                        // Left Pedal: BRAKE (Analog slider)
+                        PedalSlider(
+                            label = "CLUTCH",
+                            activeColor = Color(0xFF29B6F6),
+                            value = clutch,
+                            onValueChange = onClutchChange
+                        )
+
+                        Spacer(modifier = Modifier.width(5.dp))
+
                         PedalSlider(
                             label = "BRAKE",
                             activeColor = BrakePedalRed,
@@ -396,20 +454,70 @@ fun ControllerScreen(
                             onValueChange = onBrakeChange
                         )
 
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
 
-                        // Right Pedal: GAS / ACCEL (Analog slider with double-tap Cruise Control)
                         PedalSlider(
                             label = "GAS",
                             activeColor = GasPedalGreen,
                             value = throttle,
                             onValueChange = onThrottleChange,
-                            onDoubleTap = {
-                                // Double tap gas pedal engages/disengages Cruise Control (Bit 9)
-                                onButtonStateChange(9, true)
-                                onButtonStateChange(9, false)
-                            }
+                            onDoubleTap = { onPulseBit(9) }
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showConnectionDialog) {
+        var ipInput by remember { mutableStateOf(connectedIp.ifBlank { savedManualIp }) }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.75f))
+                .clickable { showConnectionDialog = false },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .width(380.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(CockpitPanel)
+                    .border(1.dp, activeAccent, RoundedCornerShape(12.dp))
+                    .clickable(enabled = false) {}
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("PC TELEMETRY LINK", color = activeAccent, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                Text(
+                    text = "1. Launch ETS2 via start.bat & click OK on 'SDK features detected'.\n2. Auto-discovery scans Wi-Fi & USB Tethering automatically, or enter your PC IPv4 below:",
+                    color = Color.LightGray,
+                    fontSize = 11.sp
+                )
+                OutlinedTextField(
+                    value = ipInput,
+                    onValueChange = { ipInput = it },
+                    label = { Text("PC IPv4 Address (e.g. 192.168.1.10)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = {
+                        onSetManualIp("")
+                        ipInput = ""
+                        showConnectionDialog = false
+                    }) {
+                        Text("AUTO SCAN", color = Color.Gray)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TextButton(onClick = {
+                        onSetManualIp(ipInput)
+                        showConnectionDialog = false
+                    }) {
+                        Text("CONNECT", color = activeAccent, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -428,19 +536,18 @@ fun ControllerScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.65f))
+                .background(Color.Black.copy(alpha = 0.72f))
                 .clickable { showAuxSwitchboard = false },
             contentAlignment = Alignment.Center
         ) {
-            AuxSwitchboard(
+            AuxiliarySwitchboard(
                 activeMask = buttonMask,
-                telemetryAuxFlags = telemetry.auxStateFlags,
-                isHazardActive = telemetry.isHazard,
+                telemetry = telemetry,
                 onPressChange = onButtonStateChange,
-                onAirHornBlast = onAirHornBlast,
+                onPulseBit = onPulseBit,
                 onDismiss = { showAuxSwitchboard = false },
                 modifier = Modifier
-                    .fillMaxWidth(0.84f)
+                    .fillMaxWidth(0.88f)
                     .clickable(enabled = false) {}
             )
         }
