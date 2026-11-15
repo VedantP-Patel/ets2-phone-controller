@@ -90,11 +90,11 @@ class SteeringManager(context: Context) : SensorEventListener {
         val handler = Handler(thread.looper)
         sensorHandler = handler
 
-        rotationSensor?.let { registerSafe(it, handler) }
-        accelOrGravitySensor?.let { registerSafe(it, handler) }
-        if (hasHardwareGyro && gyroSensor != null) {
-            registerSafe(gyroSensor, handler)
+        if (hasHardwareGyro) {
+            rotationSensor?.let { registerSafe(it, handler) }
+            gyroSensor?.let { registerSafe(it, handler) }
         }
+        accelOrGravitySensor?.let { registerSafe(it, handler) }
     }
 
     private fun registerSafe(sensor: Sensor, handler: Handler) {
@@ -153,7 +153,7 @@ class SteeringManager(context: Context) : SensorEventListener {
                 val totalMag = sqrt(rawGx * rawGx + rawGy * rawGy + rawGz * rawGz)
                 lastLinearAccelError = abs(totalMag - 9.81f)
 
-                if (rotationSensor == null) {
+                if (!hasHardwareGyro || rotationSensor == null) {
                     updateGravityHorizon(rawGx, rawGy, rawGz, isEkfFused = false, timestampNs = event.timestamp)
                 }
             }

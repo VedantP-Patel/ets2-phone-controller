@@ -113,7 +113,6 @@ fun ControllerScreen(
         mutableStateOf(MoreTileDef(id = "diff_lock", label = "DIFF LOCK", icon = "DIFF_LOCK", bitIndex = 18, isLatched = true))
     }
 
-    var lightStage by remember { mutableIntStateOf(2) }
     var localRetarder by remember { mutableIntStateOf(0) }
     var brakeTempC by remember { mutableFloatStateOf(140f) }
     var radioStationIdx by remember { mutableIntStateOf(0) }
@@ -570,25 +569,33 @@ fun ControllerScreen(
                         }
                     }
 
-                    // LIGHTS LOW | HIGH BEAM (dead-centered)
+                    // LIGHTS (Synced with Live ETS2 Telemetry) | HIGH BEAM
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(60.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        val lightStage = when {
+                            telemetry.isLowBeams -> 2
+                            telemetry.isParkLights -> 1
+                            else -> 0
+                        }
                         val lightLabel = when (lightStage) {
-                            0 -> "LIGHTS OFF"
                             1 -> "LIGHTS PARK"
-                            else -> "LIGHTS LOW"
+                            2 -> "LIGHTS LOW"
+                            else -> "LIGHTS OFF"
+                        }
+                        val lightColor = when (lightStage) {
+                            2 -> ConnectedGreen
+                            1 -> activeAccent
+                            else -> TextBright
                         }
                         SafeMomentaryTile(
-                            accentColor = TextBright,
+                            accentColor = lightColor,
+                            isActiveHighlight = lightStage > 0,
                             rootWidthPx = rootWidthPx,
-                            onTrigger = {
-                                lightStage = (lightStage + 1) % 3
-                                onPulseBit(2)
-                            },
+                            onTrigger = { onPulseBit(2) },
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
@@ -605,7 +612,7 @@ fun ControllerScreen(
                                             modifier = Modifier
                                                 .size(5.dp)
                                                 .clip(CircleShape)
-                                                .background(if (dot == lightStage) TextBright else TextMuted.copy(alpha = 0.35f))
+                                                .background(if (dot == lightStage) lightColor else TextMuted.copy(alpha = 0.35f))
                                         )
                                     }
                                 }
@@ -614,11 +621,11 @@ fun ControllerScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center
                                 ) {
-                                    CockpitVectorIcon("LIGHTS_LOW", tint = TextBright, modifier = Modifier.size(19.dp))
+                                    CockpitVectorIcon("LIGHTS_LOW", tint = lightColor, modifier = Modifier.size(19.dp))
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
                                         text = lightLabel,
-                                        color = TextBright,
+                                        color = lightColor,
                                         fontSize = 10.sp,
                                         lineHeight = 11.sp,
                                         fontWeight = FontWeight.ExtraBold,
@@ -690,7 +697,7 @@ fun ControllerScreen(
                     var lookXOffset by remember { mutableFloatStateOf(0f) }
                     var lookYOffset by remember { mutableFloatStateOf(0f) }
 
-                   // Primary Instrument Cluster Card (Unified Upper Row + Bottom RPM/Telemetry Strip)
+                    // Primary Instrument Cluster Card
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -721,7 +728,6 @@ fun ControllerScreen(
                             .padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Upper Region: Left (Alert Pill + Wheel) | Center (Speed + KM/H) | Right (80 Sign + Gear Box)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -729,7 +735,6 @@ fun ControllerScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Left Column: Priority Alert Pill + Safe Re-Centre Wheel Widget
                             Column(
                                 modifier = Modifier.fillMaxHeight(),
                                 verticalArrangement = Arrangement.SpaceBetween,
@@ -798,7 +803,7 @@ fun ControllerScreen(
                                     }
                                 }
 
-                                // Rule 8 Safe Re-Centre Wheel Widget
+                                // Safe Re-Centre Wheel Widget
                                 val wheelRingSize = if (isGyroMode) 36.dp else 28.dp
                                 val wheelIconSize = if (isGyroMode) 22.dp else 17.dp
                                 Row(
@@ -921,7 +926,7 @@ fun ControllerScreen(
                                 Spacer(modifier = Modifier.height(2.dp))
                             }
 
-                            // Center Column: Oversized Geometric Sans-Serif Speed + KM/H
+                            // Center Speed Display
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center,
@@ -948,7 +953,7 @@ fun ControllerScreen(
                                 )
                             }
 
-                            // Right Column: 36.dp EU Speed Limit Sign + Gear Box (D12 / N)
+                            // Right EU Speed Limit Sign + Gear Box
                             val gearLabel = when {
                                 telemetry.gear > 0 -> "D${telemetry.gear}"
                                 telemetry.gear < 0 -> "R${abs(telemetry.gear)}"
@@ -997,7 +1002,7 @@ fun ControllerScreen(
                             }
                         }
 
-                        // Bottom RPM Bar + 4 Icon-Labeled Telemetry Stats
+                        // Bottom RPM Bar + 4 Telemetry Stats
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1119,7 +1124,7 @@ fun ControllerScreen(
                         }
                     }
 
-                    // Slide-In Utility Row: RETARDER (Dead-Centered) | WIPERS | CAMERA
+                    // Slide-In Utility Row: RETARDER | WIPERS (Tap Cycle / Swipe Down Off) | CAMERA
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1201,7 +1206,7 @@ fun ControllerScreen(
                         }
 
                         SafeMomentaryTile(
-                            accentColor = TextBright,
+                            accentColor = if (telemetry.isWipersActive) activeAccent else TextBright,
                             isActiveHighlight = telemetry.isWipersActive,
                             rootWidthPx = rootWidthPx,
                             onTrigger = { onPulseBit(12) },
@@ -1217,12 +1222,19 @@ fun ControllerScreen(
                             ) {
                                 CockpitVectorIcon(
                                     name = "WIPERS",
-                                    tint = TextBright,
+                                    tint = if (telemetry.isWipersActive) activeAccent else TextBright,
                                     wiperAngleDeg = if (telemetry.isWipersActive) wiperSweep else 0f,
                                     modifier = Modifier.size(19.dp)
                                 )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("WIPERS", color = TextBright, fontSize = 9.5.sp, lineHeight = 10.sp, fontWeight = FontWeight.ExtraBold)
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = if (telemetry.isWipersActive) "WIPERS • v OFF" else "WIPERS",
+                                    color = if (telemetry.isWipersActive) activeAccent else TextBright,
+                                    fontSize = 9.sp,
+                                    lineHeight = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1
+                                )
                             }
                         }
 
@@ -1386,7 +1398,7 @@ fun ControllerScreen(
                         }
                     }
 
-                    // ^ UP (amber border) | N NEUT | v DOWN (amber border)
+                    // ^ UP | N NEUT | v DOWN
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1451,7 +1463,7 @@ fun ControllerScreen(
                         }
                     }
 
-                    // - SLOWER | CRUISE OFF/80 | + FASTER (all 3 with sky-blue rims)
+                    // - SLOWER | CRUISE OFF/80 | + FASTER
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

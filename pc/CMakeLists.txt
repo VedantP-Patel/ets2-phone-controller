@@ -16,3 +16,4 @@ target_include_directories(ets2_phone_plugin PRIVATE
 
 target_compile_options(ets2_phone_plugin PRIVATE /O2 /W4 /DNDEBUG)
 target_link_libraries(ets2_phone_plugin PRIVATE ws2_32 iphlpapi)
+target_link_options(ets2_phone_plugin PRIVATE /EXPORT:scs_input_init /EXPORT:scs_input_shutdown /EXPORT:scs_telemetry_init /EXPORT:scs_telemetry_shutdown)

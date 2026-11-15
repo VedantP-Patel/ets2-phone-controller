@@ -40,6 +40,7 @@ constexpr uint8_t SAFETY_BLIND_SPOT_RIGHT  = (1 << 2);
 constexpr uint8_t SAFETY_COLLISION_WARN    = (1 << 3);
 constexpr uint8_t SAFETY_LKA_ACTIVE        = (1 << 4);
 constexpr uint8_t SAFETY_AUTO_TRANSMISSION = (1 << 5);
+constexpr uint8_t SAFETY_PARK_LIGHTS       = (1 << 6);
 
 #pragma pack(push, 1)
 

@@ -63,6 +63,7 @@ data class TruckTelemetryV2(
     val isBlindSpotRight: Boolean get() = (safetyFlags and (1 shl 2)) != 0
     val isCollisionWarning: Boolean get() = (safetyFlags and (1 shl 3)) != 0
     val isLkaActive: Boolean get() = (safetyFlags and (1 shl 4)) != 0
+    val isParkLights: Boolean get() = (safetyFlags and (1 shl 6)) != 0
 }
 
 class UdpCockpitClient(
@@ -109,9 +110,23 @@ class UdpCockpitClient(
     init {
         val savedIp = prefs.getString("last_pc_ip", null)
         if (!savedIp.isNullOrBlank()) {
-            try {
-                targetHost.set(InetAddress.getByName(savedIp))
-            } catch (_: Exception) {}
+            parseIpv4Literal(savedIp)?.let { targetHost.set(it) }
+        }
+    }
+
+    private fun parseIpv4Literal(ip: String): InetAddress? {
+        val parts = ip.trim().split('.')
+        if (parts.size != 4) return null
+        val bytes = ByteArray(4)
+        for (i in 0..3) {
+            val v = parts[i].toIntOrNull() ?: return null
+            if (v !in 0..255) return null
+            bytes[i] = v.toByte()
+        }
+        return try {
+            InetAddress.getByAddress(bytes)
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -122,13 +137,14 @@ class UdpCockpitClient(
         if (trimmed.isEmpty()) {
             prefs.edit().remove("last_pc_ip").apply()
             targetHost.set(null)
+            onConnectionState(false, "", 0)
             return
         }
-        try {
-            val addr = InetAddress.getByName(trimmed)
-            targetHost.set(addr)
-            prefs.edit().putString("last_pc_ip", trimmed).apply()
-        } catch (_: Exception) {}
+        val addr = parseIpv4Literal(trimmed) ?: return
+        targetHost.set(addr)
+        prefs.edit().putString("last_pc_ip", trimmed).apply()
+        val alive = (SystemClock.elapsedRealtime() - lastTelemetryRxMs.get()) < 2000L
+        onConnectionState(alive, trimmed, 0)
     }
 
     fun setButtonHeld(bitIndex: Int, pressed: Boolean) {
@@ -141,10 +157,10 @@ class UdpCockpitClient(
         }
     }
 
-    fun triggerPulse(bitIndex: Int, durationMs: Long = 65L) {
-        if (bitIndex !in 0..63) return
-        pulseExpiryMap[bitIndex] = SystemClock.elapsedRealtime() + durationMs
-    }
+    fun triggerPulse(bitIndex: Int, durationMs: Long = 150L) {
+    if (bitIndex !in 0..63) return
+    pulseExpiryMap[bitIndex] = SystemClock.elapsedRealtime() + durationMs
+}
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -163,7 +179,6 @@ class UdpCockpitClient(
             broadcast = true
         }
 
-        // Listener for PC Port 5006 Beacon + Active Subnet Gateway Probe
         beaconThread = Thread({
             var bSock: DatagramSocket? = null
             try {
@@ -196,7 +211,6 @@ class UdpCockpitClient(
             }
         }, "CockpitBeaconThread").apply { start() }
 
-        // Telemetry & Haptics Receiver
         rxThread = Thread({
             val buf = ByteArray(128)
             val pkt = DatagramPacket(buf, buf.size)
@@ -211,7 +225,12 @@ class UdpCockpitClient(
                         val ver = bb.get()
                         if (magic == MAGIC && ver == VERSION && verifyXor(buf, DOWNLINK_SIZE)) {
                             lastTelemetryRxMs.set(SystemClock.elapsedRealtime())
-                            targetHost.set(pkt.address)
+                            val prev = targetHost.getAndSet(pkt.address)
+                            if (prev?.hostAddress != pkt.address.hostAddress) {
+                                pkt.address.hostAddress?.let {
+                                    prefs.edit().putString("last_pc_ip", it).apply()
+                                }
+                            }
 
                             val safety = bb.get().toInt() and 0xFF
                             val speed = bb.float
@@ -262,7 +281,6 @@ class UdpCockpitClient(
             }
         }, "CockpitRxThread").apply { start() }
 
-        // 100 Hz Control Transmitter + Active Discovery Probe
         txThread = Thread({
             val txArray = ByteArray(UPLINK_SIZE)
             val bb = ByteBuffer.wrap(txArray).order(ByteOrder.LITTLE_ENDIAN)
@@ -277,7 +295,6 @@ class UdpCockpitClient(
                 val host = targetHost.get()
                 val telemetryAlive = (loopStart - lastTelemetryRxMs.get()) < 2000L
 
-                // Build control packet
                 var effectiveMask = heldButtons.get()
                 val iter = pulseExpiryMap.entries.iterator()
                 while (iter.hasNext()) {
@@ -324,8 +341,8 @@ class UdpCockpitClient(
                     } catch (_: Exception) {}
                 }
 
-                // If not actively receiving telemetry yet, also probe subnet gateways (USB tethering / Hotspot PC IP) every 600ms
-                if (!telemetryAlive && (loopStart - lastProbeMs) > 600L) {
+                // Active /24 subnet discovery probe every 1.2s when not yet receiving telemetry
+                if (!telemetryAlive && (loopStart - lastProbeMs) > 1200L) {
                     lastProbeMs = loopStart
                     for (candidate in getDiscoveryCandidates()) {
                         try {
@@ -336,9 +353,9 @@ class UdpCockpitClient(
                     }
                 }
 
-                if (loopStart - lastStatsMs >= 500L) {
+                if (loopStart - lastStatsMs >= 400L) {
                     val hostStr = host?.hostAddress ?: ""
-                    onConnectionState(telemetryAlive, hostStr, ppsCounter * 2)
+                    onConnectionState(telemetryAlive, hostStr, (ppsCounter * 1000L / 400L).toInt())
                     ppsCounter = 0
                     lastStatsMs = loopStart
                 }
@@ -364,10 +381,13 @@ class UdpCockpitClient(
                     val addr = ia.address
                     if (addr is Inet4Address) {
                         ia.broadcast?.let { list.add(it) }
-                        // Gateway (.1) is always the Windows PC in USB Tethering & Mobile Hotspot!
-                        val bytes = addr.address.copyOf()
-                        bytes[3] = 1
-                        list.add(InetAddress.getByAddress(bytes))
+                        val base = addr.address.copyOf()
+                        val selfLastOctet = base[3].toInt() and 0xFF
+                        for (hostOctet in 1..254) {
+                            if (hostOctet == selfLastOctet) continue
+                            base[3] = hostOctet.toByte()
+                            list.add(InetAddress.getByAddress(base.clone()))
+                        }
                     }
                 }
             }
