@@ -8,7 +8,9 @@ set "PC_DIR=%ROOT_DIR%pc"
 set "ANDROID_DIR=%ROOT_DIR%android"
 set "BUILT_DLL=%PC_DIR%\build\ets2_phone_plugin.dll"
 set "ETS2_BIN="
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$cands = @('D:\Games\Euro Truck Simulator 2\bin\win_x64','C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2\bin\win_x64','C:\Program Files\Steam\steamapps\common\Euro Truck Simulator 2\bin\win_x64'); $sp = (Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath; if (-not $sp) { $sp = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam' -ErrorAction SilentlyContinue).InstallPath }; if ($sp) { $cands += Join-Path $sp 'steamapps\common\Euro Truck Simulator 2\bin\win_x64'; $vdf = Join-Path $sp 'steamapps\libraryfolders.vdf'; if (Test-Path $vdf) { Select-String -Path $vdf -Pattern '\"path\"\s+\"([^\"]+)\"' | ForEach-Object { $lib = $_.Matches[0].Groups[1].Value -replace '\\\\','\'; $cands += Join-Path $lib 'steamapps\common\Euro Truck Simulator 2\bin\win_x64' } } }; $found = $cands | Where-Object { Test-Path (Join-Path $_ 'eurotrucks2.exe') } | Select-Object -First 1; if ($found) { Write-Output $found }"`) do set "ETS2_BIN=%%P"
+if exist "%PC_DIR%\scripts\find_ets2.ps1" (
+    for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PC_DIR%\scripts\find_ets2.ps1"`) do set "ETS2_BIN=%%P"
+)
 if not defined ETS2_BIN set "ETS2_BIN=D:\Games\Euro Truck Simulator 2\bin\win_x64"
 set "ETS2_EXE=%ETS2_BIN%\eurotrucks2.exe"
 set "PLUGINS_DIR=%ETS2_BIN%\plugins"
@@ -52,15 +54,17 @@ if %errorlevel% equ 0 (
 :: 3. Check & Auto-Bind ETS2 Profile Controls
 set "BIND_STATUS=Press [A] to Auto-Bind Profile"
 if not exist "%PC_DIR%\scripts\auto_bind_ets2.ps1" goto AFTER_BIND_CHECK
-findstr /S /C:"joy.steering" "%USERPROFILE%\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\profiles\*.sii" >nul 2>&1
-if %errorlevel% equ 0 (
-    set "BIND_STATUS=Auto-Bound to ETS2 Profile (Plug-and-Play)"
-    goto AFTER_BIND_CHECK
-)
+findstr /S /C:"photo_mode" "%USERPROFILE%\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" >nul 2>&1
+if %errorlevel% neq 0 goto TRY_AUTO_BIND
+findstr /S /C:"coach_display" "%USERPROFILE%\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" >nul 2>&1
+if %errorlevel% neq 0 goto TRY_AUTO_BIND
+set "BIND_STATUS=Auto-Bound to ETS2 Profile - Plug-and-Play"
+goto AFTER_BIND_CHECK
+:TRY_AUTO_BIND
 tasklist /FI "IMAGENAME eq eurotrucks2.exe" 2>nul | find /I "eurotrucks2.exe" >nul
 if errorlevel 1 (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%PC_DIR%\scripts\auto_bind_ets2.ps1" >nul 2>&1
-    if %errorlevel% equ 0 set "BIND_STATUS=Auto-Bound to ETS2 Profile (Plug-and-Play)"
+    if not errorlevel 1 set "BIND_STATUS=Auto-Bound to ETS2 Profile - Plug-and-Play"
 )
 :AFTER_BIND_CHECK
 echo  [OK] Controls     : %BIND_STATUS%
@@ -70,8 +74,9 @@ set "PHONE_STATUS=Wi-Fi / USB Tethering Ready"
 where adb >nul 2>&1
 if %errorlevel% neq 0 goto AFTER_ADB_CHECK
 for /f "tokens=1,2" %%A in ('adb devices 2^>nul ^| findstr /R /C:"device$"') do (
-    set "PHONE_STATUS=USB Connected ^(%%A^) - App Launched"
-    adb shell monkey -p com.ets2controller -c android.intent.category.LAUNCHER 1 >nul 2>&1
+    set "PHONE_STATUS=USB Connected ^(%%A^) - ADB Tunnel + App Launched"
+    adb -s %%A reverse tcp:5005 tcp:5005 >nul 2>&1
+    adb -s %%A shell am start -n com.ets2controller/.MainActivity >nul 2>&1
 )
 :AFTER_ADB_CHECK
 echo  [OK] Phone Link   : %PHONE_STATUS%

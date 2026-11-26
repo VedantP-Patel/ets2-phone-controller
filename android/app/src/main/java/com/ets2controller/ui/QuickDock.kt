@@ -33,6 +33,7 @@ private data class DockTile(
     val icon: String,
     val bit: Int,
     val guarded: Boolean = false,
+    val momentary: Boolean = false,
     val isOn: (TruckTelemetryV2) -> Boolean = { false }
 )
 
@@ -47,6 +48,7 @@ fun QuickDockOverlay(
     holdMs: Long = 400L,
     slideOffCancel: Boolean = true,
     onTrigger: (Int) -> Unit,
+    onHoldChange: (Int, Boolean) -> Unit = { _, _ -> },
     onDismiss: () -> Unit
 ) {
     val tiles = remember {
@@ -54,9 +56,9 @@ fun QuickDockOverlay(
             DockTile("ENGINE", "engine", 1, guarded = true) { it.isEngineRunning },
             DockTile("LIGHTS", "low", 2) { it.isLowBeams },
             DockTile("BEACON", "beacon", 22) { it.isBeacons },
-            DockTile("AUX LIGHT", "sun", 58),
-            DockTile("WINDOW L", "window", 54),
-            DockTile("WINDOW R", "window", 55),
+            DockTile("CABIN LT", "sun", 58),
+            DockTile("WINDOW L", "window", 54, momentary = true),
+            DockTile("WINDOW R", "window", 55, momentary = true),
             DockTile("QUICK SAVE", "save", 32),
             DockTile("PHOTO", "cam", 59)
         )
@@ -131,7 +133,8 @@ fun QuickDockOverlay(
                                 guarded = tile.guarded,
                                 holdMs = holdMs,
                                 slideOffCancel = slideOffCancel,
-                                onTap = { onTrigger(tile.bit) }
+                                onPressChanged = if (tile.momentary) { held -> onHoldChange(tile.bit, held) } else null,
+                                onTap = { if (!tile.momentary) onTrigger(tile.bit) }
                             )
                         }
                     }

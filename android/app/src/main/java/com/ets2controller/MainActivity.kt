@@ -203,6 +203,10 @@ class MainActivity : ComponentActivity() {
                             val mask = 1L shl bit
                             buttonMask = if (pressed) (buttonMask or mask) else (buttonMask and mask.inv())
                             udpClient?.setButtonHeld(bit, pressed)
+                            if (pressed) {
+                                if (bit == 23) audioSynth.playAirHornBlast()
+                                udpClient?.triggerPulse(bit, 65L)
+                            }
                         }
                     },
                     onPulseBit = { bit ->

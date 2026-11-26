@@ -635,9 +635,15 @@ fun DesignCockpitScreen(
             val overlayExit = if (settings.reduceMotion) ExitTransition.None else fadeOut(tween(130)) + scaleOut(tween(130), targetScale = 0.98f)
 
             AnimatedVisibility(visible = showMore, enter = overlayEnter, exit = overlayExit) {
-                DMorePanel(holdMs = holdMs, slideOffCancel = slideOff, onTrigger = { pulse(it) }, onDismiss = { showMore = false })
+                DMorePanel(
+                    holdMs = holdMs, slideOffCancel = slideOff,
+                    onTrigger = { pulse(it) }, onHoldChange = onButtonStateChange, onDismiss = { showMore = false }
+                )
             }
-            if (showDock) QuickDockOverlay(accent, t, holdMs = holdMs, slideOffCancel = slideOff, onTrigger = { pulse(it) }, onDismiss = { showDock = false })
+            if (showDock) QuickDockOverlay(
+                accent, t, holdMs = holdMs, slideOffCancel = slideOff,
+                onTrigger = { pulse(it) }, onHoldChange = onButtonStateChange, onDismiss = { showDock = false }
+            )
             AnimatedVisibility(visible = showData, enter = overlayEnter, exit = overlayExit) {
                 DataOverlay(t, brakeTempC, settings.speedUnitMph, accent, onDismiss = { showData = false })
             }

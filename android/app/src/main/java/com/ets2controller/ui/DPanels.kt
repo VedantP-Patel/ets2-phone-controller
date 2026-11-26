@@ -28,16 +28,16 @@ import androidx.compose.ui.unit.sp
 import com.ets2controller.ui.theme.*
 import kotlinx.coroutines.delay
 
-private data class MoreItem(val label: String, val icon: String, val bit: Int, val guarded: Boolean = false)
+private data class MoreItem(val label: String, val icon: String, val bit: Int, val guarded: Boolean = false, val momentary: Boolean = false)
 
 private val MORE_GROUPS: List<Pair<String, List<MoreItem>>> = listOf(
-    "DRIVE ASSIST" to listOf(MoreItem("ACC gap", "acc_gap", 46), MoreItem("ACC mode", "gauge", 48), MoreItem("Lane assist", "lane", 47), MoreItem("Drive", "d", 56), MoreItem("Reverse", "r", 57)),
-    "BRAKES" to listOf(MoreItem("Park", "park", 6, true), MoreItem("Eng brake", "exh", 7), MoreItem("Retarder up", "up", 24), MoreItem("Retarder dn", "down", 25), MoreItem("Trailer brake", "trailer", 45)),
+    "DRIVE ASSIST" to listOf(MoreItem("ACC gap", "acc_gap", 46), MoreItem("AEB brake", "brake", 48), MoreItem("Lane assist", "lane", 47), MoreItem("Drive", "d", 56), MoreItem("Reverse", "r", 57)),
+    "BRAKES" to listOf(MoreItem("Park", "park", 6, true), MoreItem("Eng brake", "exh", 7), MoreItem("Retarder up", "up", 24), MoreItem("Retarder dn", "down", 25), MoreItem("Trailer brake", "trailer", 45, momentary = true)),
     "TRAILER AND AXLES" to listOf(MoreItem("Couple", "link", 20, true), MoreItem("Trailer axle", "axle_trailer", 44), MoreItem("Truck axle", "axle_truck", 19), MoreItem("Diff lock", "lock", 18), MoreItem("Susp reset", "reset", 53)),
-    "SUSPENSION" to listOf(MoreItem("Front up", "susp_f_up", 49), MoreItem("Front down", "susp_f_dn", 50), MoreItem("Rear up", "susp_r_up", 51), MoreItem("Rear down", "susp_r_dn", 52), MoreItem("Neutral", "n", 17)),
-    "ELECTRICS AND LIGHTS" to listOf(MoreItem("Engine", "engine", 1, true), MoreItem("Lights", "low", 2), MoreItem("High beam", "high", 21), MoreItem("Flash", "flash", 35), MoreItem("Aux light", "sun", 58)),
-    "CABIN" to listOf(MoreItem("Window L", "window", 54), MoreItem("Window R", "window", 55), MoreItem("Beacon", "beacon", 22), MoreItem("Wipers", "wiper", 12), MoreItem("Air horn", "horn", 23)),
-    "VIEWS" to listOf(MoreItem("Look L", "look_left", 38), MoreItem("Look R", "look_right", 39), MoreItem("Map", "map", 42), MoreItem("Dash info", "gauge", 29), MoreItem("Rest stop", "clock", 41)),
+    "SUSPENSION" to listOf(MoreItem("Front up", "susp_f_up", 49, momentary = true), MoreItem("Front down", "susp_f_dn", 50, momentary = true), MoreItem("Rear up", "susp_r_up", 51, momentary = true), MoreItem("Rear down", "susp_r_dn", 52, momentary = true), MoreItem("Neutral", "n", 17)),
+    "ELECTRICS AND LIGHTS" to listOf(MoreItem("Engine", "engine", 1, true), MoreItem("Lights", "low", 2), MoreItem("High beam", "high", 21), MoreItem("Flash", "flash", 35, momentary = true), MoreItem("Cabin lt", "sun", 58)),
+    "CABIN" to listOf(MoreItem("Window L", "window", 54, momentary = true), MoreItem("Window R", "window", 55, momentary = true), MoreItem("Beacon", "beacon", 22), MoreItem("Wipers", "wiper", 12), MoreItem("Air horn", "horn", 23, momentary = true)),
+    "VIEWS" to listOf(MoreItem("Look L", "look_left", 38), MoreItem("Look R", "look_right", 39), MoreItem("Map", "map", 42), MoreItem("Dash info", "gauge", 29), MoreItem("Service", "clock", 41)),
     "CAMERAS" to listOf(MoreItem("Interior", "cam_interior", 13), MoreItem("Chase", "cam_chase", 34), MoreItem("Top", "cam_top", 37), MoreItem("Window", "cam_window", 33), MoreItem("Mirrors", "mirror", 40)),
     "GAME" to listOf(MoreItem("Route", "route", 8), MoreItem("Job info", "job", 31), MoreItem("Photo", "cam", 59), MoreItem("Quick save", "save", 32), MoreItem("Pause", "pause", 43), MoreItem("Activate", "check", 30))
 )
@@ -48,6 +48,7 @@ fun DMorePanel(
     holdMs: Long = 400L,
     slideOffCancel: Boolean = true,
     onTrigger: (Int) -> Unit,
+    onHoldChange: (Int, Boolean) -> Unit = { _, _ -> },
     onDismiss: () -> Unit
 ) {
     val layoutDir = LocalLayoutDirection.current
@@ -85,7 +86,9 @@ fun DMorePanel(
                                     DTile(
                                         it0.label, it0.icon, Modifier.weight(1f).height(38.dp),
                                         guarded = it0.guarded, holdMs = holdMs, slideOffCancel = slideOffCancel,
-                                        iconSize = 19.dp, onTap = { onTrigger(it0.bit) }
+                                        iconSize = 19.dp,
+                                        onPressChanged = if (it0.momentary) { held -> onHoldChange(it0.bit, held) } else null,
+                                        onTap = { if (!it0.momentary) onTrigger(it0.bit) }
                                     )
                                 }
                             }

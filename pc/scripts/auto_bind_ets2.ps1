@@ -38,8 +38,8 @@ $inputAxisMap = @{
     'j_throttle' = 'throttle';
     'j_brake'    = 'brake';
     'j_clutch'   = 'clutch';
-    'j_look_x'   = 'look_x';
-    'j_look_y'   = 'look_y';
+    'j_look_lr'  = 'look_x';
+    'j_look_ud'  = 'look_y';
 };
 
 $buttonMap = @{
@@ -51,8 +51,8 @@ $buttonMap = @{
     'lblinker'      = 'blinker_left';
     'rblinker'      = 'blinker_right';
     'parkingbrake'  = 'park_brake';
-    'motorbrake'    = 'engine_brake';
-    'advpage0'      = 'advisor_map';
+    'engbraketog'   = 'engine_brake';
+    'advmouse'      = 'advisor_map';
     'cruiectrl'     = 'cruise_toggle';
     'cruisectrl'    = 'cruise_toggle';
     'gearup'        = 'shift_up';
@@ -80,7 +80,7 @@ $buttonMap = @{
     'cruisectrlres' = 'cruise_resume';
     'display'       = 'dash_info';
     'activate'      = 'activate';
-    'advpage1'      = 'advisor_job';
+    'advoptions'    = 'advisor_job';
     'quicksave'     = 'advisor_service';
     'cam5'          = 'cam_window_lean';
     'cam2'          = 'cam_chase';
@@ -90,37 +90,26 @@ $buttonMap = @{
     'lookpos4'      = 'look_right_snap';
     'showmirrors'   = 'mirrors_toggle';
     'hudmirrors'    = 'mirrors_toggle';
-    'advpage3'      = 'advisor_rest';
-    'worldmap'      = 'world_map';
+    'services'      = 'advisor_rest';
+    'navmap'        = 'world_map';
     'menu'          = 'esc_menu';
-    'trl_lift_axle' = 'trailer_lift_axle';
-    'trailerlift'   = 'trailer_lift_axle';
+    'liftaxlet'     = 'trailer_lift_axle';
     'trl_brake'     = 'trailer_brake';
     'trailerbrake'  = 'trailer_brake';
-    'acc_dist'      = 'acc_distance';
-    'accdistance'   = 'acc_distance';
-    'lane_assist'   = 'lka_toggle';
-    'lka'           = 'lka_toggle';
-    'emer_brake'    = 'aebs_toggle';
-    'aebs'          = 'aebs_toggle';
-    'susp_f_up'     = 'susp_front_up';
-    'suspfrontup'   = 'susp_front_up';
-    'susp_f_dn'     = 'susp_front_down';
-    'suspfrontdn'   = 'susp_front_down';
-    'susp_r_up'     = 'susp_rear_up';
-    'susprearup'    = 'susp_rear_up';
-    'susp_r_dn'     = 'susp_rear_down';
-    'suspreardn'    = 'susp_rear_down';
-    'susp_reset'    = 'susp_reset';
+    'accmode'       = 'acc_distance';
+    'laneassist'    = 'lka_toggle';
+    'embrake'       = 'aebs_toggle';
+    'frontsuspup'   = 'susp_front_up';
+    'frontsuspdwn'  = 'susp_front_down';
+    'rearsuspup'    = 'susp_rear_up';
+    'rearsuspdwn'   = 'susp_rear_down';
     'suspreset'     = 'susp_reset';
-    'win_open_l'    = 'window_left';
-    'winleft'       = 'window_left';
-    'win_open_r'    = 'window_right';
-    'winright'      = 'window_right';
+    'lwinopen'      = 'window_left';
+    'rwinopen'      = 'window_right';
     'geardrive'     = 'shift_drive';
     'gearreverse'   = 'shift_reverse';
-    'auxlight'      = 'coach_light';
-    'photo'         = 'coach_display';
+    'cabinlight'    = 'coach_light';
+    'photo_mode'    = 'coach_display';
 };
 
 $files | ForEach-Object {
@@ -193,6 +182,22 @@ $files | ForEach-Object {
         }
         elseif ($head -match '"mix\s+(\w+)\s+$') {
             $mixName = $Matches[1];
+            if ($joySlot -eq 'joy' -and $expr -match '\bjoy\.b\d+\?0|(?:short|long)_press\(\)|modifier\([^)]*(?:short|long)_press\(\)\)') {
+                $cleanedB = [regex]::Replace($expr, '\|\|\s*modifier\([^`]*?(?:short|long)_press\([^)]*\)[^`]*?\)\s*(?=\|)', '');
+                $cleanedB = [regex]::Replace($cleanedB, '\|\|\s*(?:short|long)_press\((?:joy\.b\d+\?0)?\)\s*(?=\|)', '');
+                $cleanedB = [regex]::Replace($cleanedB, '\bjoy\.b\d+\?0\s*\|\s*', '');
+                $cleanedB = [regex]::Replace($cleanedB, '\s*\|\s*\bjoy\.b\d+\?0', '');
+                $cleanedB = [regex]::Replace($cleanedB, '\bjoy\.b\d+\?0', '');
+                $cleanedB = [regex]::Replace($cleanedB, '\|\|\s*\|', '|');
+                if ($cleanedB -ne $expr) { $expr = $cleanedB.Trim(); $lines[$i] = $head + $bt + $expr + $bt + $tail; }
+            };
+            if ($mixName -eq 'wipersback' -or $mixName -eq 'motorbrake') {
+                $staleChan = if ($mixName -eq 'wipersback') { 'wipers_down' } else { 'engine_brake' };
+                $cleanedW = [regex]::Replace($expr, [regex]::Escape($joySlot + '.' + $staleChan + '?0') + '\s*\|\s*', '');
+                $cleanedW = [regex]::Replace($cleanedW, '\s*\|\s*' + [regex]::Escape($joySlot + '.' + $staleChan + '?0'), '');
+                if ($cleanedW -ne $expr) { $lines[$i] = $head + $bt + $cleanedW.Trim() + $bt + $tail; }
+                continue;
+            };
             if ($buttonMap.ContainsKey($mixName)) {
                 $chan = $buttonMap[$mixName];
                 $token = $joySlot + '.' + $chan + '?0';
