@@ -210,6 +210,18 @@ fun CockpitVectorIcon(
                 drawLine(tint, Offset(w * 0.24f, h * 0.28f), Offset(w * 0.32f, h * 0.36f), stroke.width, StrokeCap.Round)
                 drawLine(tint, Offset(w * 0.76f, h * 0.28f), Offset(w * 0.68f, h * 0.36f), stroke.width, StrokeCap.Round)
             }
+            "SLIDE" -> {
+                drawLine(tint, Offset(w * 0.18f, cy), Offset(w * 0.82f, cy), stroke.width, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.18f, cy), Offset(w * 0.34f, h * 0.34f), stroke.width, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.18f, cy), Offset(w * 0.34f, h * 0.66f), stroke.width, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.82f, cy), Offset(w * 0.66f, h * 0.34f), stroke.width, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.82f, cy), Offset(w * 0.66f, h * 0.66f), stroke.width, StrokeCap.Round)
+            }
+            "BARS" -> {
+                drawLine(tint, Offset(w * 0.24f, h * 0.80f), Offset(w * 0.24f, h * 0.50f), stroke.width, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.50f, h * 0.80f), Offset(w * 0.50f, h * 0.20f), stroke.width, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.76f, h * 0.80f), Offset(w * 0.76f, h * 0.62f), stroke.width, StrokeCap.Round)
+            }
             "EYE" -> {
                 val eye = Path().apply {
                     moveTo(w * 0.16f, cy)

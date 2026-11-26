@@ -25,12 +25,18 @@ import com.ets2controller.network.TruckTelemetryV2
 import com.ets2controller.network.UdpCockpitClient
 import com.ets2controller.sensor.SteeringManager
 import com.ets2controller.ui.ControllerScreen
+import com.ets2controller.ui.DesignCockpitScreen
 
 class MainActivity : ComponentActivity() {
     private lateinit var steeringManager: SteeringManager
     private lateinit var settingsRepo: SettingsRepository
     private var udpClient: UdpCockpitClient? = null
     private var vibrator: Vibrator? = null
+
+    // Touch steering (PAD / SLIDE). When non-null it replaces the gyro value sent to the PC.
+    @Volatile private var touchSteer: Float? = null
+    @Volatile private var liveSpeedKmh: Float = 0f
+    @Volatile private var liveSpeedSens: Float = 0.4f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,11 +99,13 @@ class MainActivity : ComponentActivity() {
                 var coachSmoothMode by remember { mutableStateOf(false) }
 
                 DisposableEffect(Unit) {
+                    liveSpeedSens = steeringManager.settings.speedSensitivity
                     val client = UdpCockpitClient(
                         context = this@MainActivity,
                         onTelemetryUpdate = { telem ->
                             telemetry = telem
                             steeringManager.currentSpeedKmh = telem.speedKmh
+                            liveSpeedKmh = telem.speedKmh
                             steeringManager.isLeftBlinkerActive = telem.isLeftBlinker
                             steeringManager.isRightBlinkerActive = telem.isRightBlinker
                         },
@@ -114,7 +122,11 @@ class MainActivity : ComponentActivity() {
                             packetsPerSec = pps
                         }
                     ).apply {
-                        steeringProvider = { steeringManager.normalizedSteering }
+                        steeringProvider = {
+                            val raw = touchSteer ?: steeringManager.normalizedSteering
+                            val scale = 1f - liveSpeedSens * 0.5f * (liveSpeedKmh / 120f).coerceIn(0f, 1f)
+                            (raw * scale).coerceIn(-1f, 1f)
+                        }
                     }
                     udpClient = client
                     client.start()
@@ -127,19 +139,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                ControllerScreen(
+                DesignCockpitScreen(
                     isConnected = isConnected,
                     connectedIp = connectedIp,
                     packetsPerSec = packetsPerSec,
                     savedManualIp = udpClient?.getSavedIp() ?: "",
                     onSetManualIp = { ip -> udpClient?.setManualHost(ip) },
-                    steeringProvider = { steeringManager.normalizedSteering },
                     rawAngleProvider = { steeringManager.rawAngleDeg },
                     throttle = throttle,
                     brake = brake,
                     clutch = clutch,
                     buttonMask = buttonMask,
-                    coachSmoothMode = coachSmoothMode,
                     settings = settings,
                     telemetry = telemetry,
                     onThrottleChange = {
@@ -162,21 +172,18 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onPulseBit = { bit -> udpClient?.triggerPulse(bit, 65L) },
-                    onToggleCoachMode = {
-                        coachSmoothMode = !coachSmoothMode
-                        steeringManager.coachSmoothMode = coachSmoothMode
-                        udpClient?.coachSmoothMode = coachSmoothMode
-                    },
                     onCalibrateClick = { steeringManager.calibrateCenter() },
                     onSaveSettings = { updated: ControllerSettings ->
                         settings = updated
+                        liveSpeedSens = updated.speedSensitivity
                         settingsRepo.saveSettings(updated)
                         steeringManager.settings = updated
                     },
                     onLookChange = { lx, ly ->
                         udpClient?.lookX = lx
                         udpClient?.lookY = ly
-                    }
+                    },
+                    onTouchSteerChange = { touchSteer = it }
                 )
             }
         }

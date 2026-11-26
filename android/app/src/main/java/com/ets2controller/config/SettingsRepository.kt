@@ -24,7 +24,18 @@ data class ControllerSettings(
     val steeringHapticTension: Boolean = true,
     val gravityAnchorEnabled: Boolean = true,
     val autoZeroRecenterSensitivity: Float = 1.0f,
-    val centerSnapAssistance: Boolean = true
+    val centerSnapAssistance: Boolean = true,
+    // Design v2 controls and safety
+    val holdConfirmMs: Int = 400,
+    val controlScale: Float = 1.0f,
+    val leftHanded: Boolean = false,
+    val hapticStrength: Float = 0.8f,
+    val edgeGuardDp: Int = 14,
+    val brakeWins: Boolean = true,
+    val slideOffCancel: Boolean = true,
+    val hazardNeedsHold: Boolean = true,
+    val speedSensitivity: Float = 0.4f,
+    val speedSensitiveDeadzone: Boolean = true
 )
 
 class SettingsRepository(context: Context) {
@@ -67,7 +78,17 @@ class SettingsRepository(context: Context) {
             steeringHapticTension = prefs.getBoolean("steering_haptic_tension", true),
             gravityAnchorEnabled = prefs.getBoolean("gravity_anchor_enabled", true),
             autoZeroRecenterSensitivity = prefs.getFloat("auto_zero_sensitivity", 1.0f),
-            centerSnapAssistance = prefs.getBoolean("center_snap_assistance", true)
+            centerSnapAssistance = prefs.getBoolean("center_snap_assistance", true),
+            holdConfirmMs = prefs.getInt("hold_confirm_ms", 400),
+            controlScale = prefs.getFloat("control_scale", 1.0f),
+            leftHanded = prefs.getBoolean("left_handed", false),
+            hapticStrength = prefs.getFloat("haptic_strength", 0.8f),
+            edgeGuardDp = prefs.getInt("edge_guard_dp", 14),
+            brakeWins = prefs.getBoolean("brake_wins", true),
+            slideOffCancel = prefs.getBoolean("slide_off_cancel", true),
+            hazardNeedsHold = prefs.getBoolean("hazard_needs_hold", true),
+            speedSensitivity = prefs.getFloat("speed_sensitivity", 0.4f),
+            speedSensitiveDeadzone = prefs.getBoolean("speed_sensitive_deadzone", true)
         )
     }
 
@@ -94,6 +115,16 @@ class SettingsRepository(context: Context) {
             .putBoolean("gravity_anchor_enabled", settings.gravityAnchorEnabled)
             .putFloat("auto_zero_sensitivity", settings.autoZeroRecenterSensitivity)
             .putBoolean("center_snap_assistance", settings.centerSnapAssistance)
+            .putInt("hold_confirm_ms", settings.holdConfirmMs)
+            .putFloat("control_scale", settings.controlScale)
+            .putBoolean("left_handed", settings.leftHanded)
+            .putFloat("haptic_strength", settings.hapticStrength)
+            .putInt("edge_guard_dp", settings.edgeGuardDp)
+            .putBoolean("brake_wins", settings.brakeWins)
+            .putBoolean("slide_off_cancel", settings.slideOffCancel)
+            .putBoolean("hazard_needs_hold", settings.hazardNeedsHold)
+            .putFloat("speed_sensitivity", settings.speedSensitivity)
+            .putBoolean("speed_sensitive_deadzone", settings.speedSensitiveDeadzone)
             .apply()
     }
 }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -72,7 +73,8 @@ fun ControllerScreen(
     onToggleCoachMode: () -> Unit,
     onCalibrateClick: () -> Unit,
     onSaveSettings: (ControllerSettings) -> Unit,
-    onLookChange: (Float, Float) -> Unit
+    onLookChange: (Float, Float) -> Unit,
+    onTouchSteerChange: (Float?) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -104,10 +106,13 @@ fun ControllerScreen(
     var rootWidthPx by remember { mutableFloatStateOf(0f) }
     var showTuningModal by remember { mutableStateOf(false) }
     var showMoreDrawer by remember { mutableStateOf(false) }
+    var showDataPage by remember { mutableStateOf(false) }
+    var showQuickDock by remember { mutableStateOf(false) }
     var showConnectionDialog by remember { mutableStateOf(false) }
 
     var isGyroMode by remember { mutableStateOf(true) }
     var padSteerNorm by remember { mutableFloatStateOf(0f) }
+    var isSlideMode by remember { mutableStateOf(false) }
 
     var pinnedTile by remember {
         mutableStateOf(MoreTileDef(id = "diff_lock", label = "DIFF LOCK", icon = "DIFF_LOCK", bitIndex = 18, isLatched = true))
@@ -383,7 +388,9 @@ fun ControllerScreen(
                                 .background(if (isGyroMode) activeAccent else Color.Transparent)
                                 .clickable {
                                     isGyroMode = true
+                                    isSlideMode = false
                                     padSteerNorm = 0f
+                                    onTouchSteerChange(null)
                                 }
                                 .padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -405,20 +412,52 @@ fun ControllerScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxHeight()
-                                .background(if (!isGyroMode) activeAccent else Color.Transparent)
-                                .clickable { isGyroMode = false }
+                                .background(if (!isGyroMode && !isSlideMode) activeAccent else Color.Transparent)
+                                .clickable {
+                                    isGyroMode = false
+                                    isSlideMode = false
+                                    padSteerNorm = 0f
+                                    onTouchSteerChange(0f)
+                                }
                                 .padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             CockpitVectorIcon(
                                 name = "WHEEL",
-                                tint = if (!isGyroMode) Color(0xFF0D1015) else TextBright,
+                                tint = if (!isGyroMode && !isSlideMode) Color(0xFF0D1015) else TextBright,
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
                                 text = "PAD",
-                                color = if (!isGyroMode) Color(0xFF0D1015) else TextBright,
+                                color = if (!isGyroMode && !isSlideMode) Color(0xFF0D1015) else TextBright,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .background(if (isSlideMode) activeAccent else Color.Transparent)
+                                .clickable {
+                                    isGyroMode = false
+                                    isSlideMode = true
+                                    padSteerNorm = 0f
+                                    onTouchSteerChange(0f)
+                                }
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            CockpitVectorIcon(
+                                name = "SLIDE",
+                                tint = if (isSlideMode) Color(0xFF0D1015) else TextBright,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "SLIDE",
+                                color = if (isSlideMode) Color(0xFF0D1015) else TextBright,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.ExtraBold
                             )
@@ -431,7 +470,27 @@ fun ControllerScreen(
                             .clip(RoundedCornerShape(10.dp))
                             .background(CockpitPanel)
                             .border(1.dp, CockpitBorder, RoundedCornerShape(10.dp))
-                            .clickable { showMoreDrawer = true },
+                            .clickable { showDataPage = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CockpitVectorIcon("BARS", tint = TextBright, modifier = Modifier.size(18.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(width = 46.dp, height = 40.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(CockpitPanel)
+                            .border(1.dp, CockpitBorder, RoundedCornerShape(10.dp))
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { showMoreDrawer = true },
+                                    onLongPress = {
+                                        buzzStrong()
+                                        showQuickDock = true
+                                    }
+                                )
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Text("•••", color = activeAccent, fontSize = 13.sp, fontWeight = FontWeight.Black)
@@ -1082,7 +1141,18 @@ fun ControllerScreen(
                     }
 
                     // Compact Touch Steering Pad Bar when PAD mode is active
-                    if (!isGyroMode) {
+                    if (isSlideMode) {
+                        SlideSteeringBar(
+                            accentColor = activeAccent,
+                            onSteerChange = { s ->
+                                padSteerNorm = s
+                                onTouchSteerChange(s)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(34.dp)
+                        )
+                    } else if (!isGyroMode) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1097,6 +1167,7 @@ fun ControllerScreen(
                                         fun updatePad(x: Float) {
                                             val norm = ((x / size.width.toFloat()) * 2f - 1f).coerceIn(-1f, 1f)
                                             padSteerNorm = norm
+                                            onTouchSteerChange(norm)
                                             onLookChange(norm * 0.25f, 0f)
                                         }
                                         updatePad(down.position.x)
@@ -1105,6 +1176,7 @@ fun ControllerScreen(
                                             val ch = ev.changes.firstOrNull { it.id == pointerId }
                                             if (ch == null || !ch.pressed) {
                                                 padSteerNorm = 0f
+                                                onTouchSteerChange(0f)
                                                 onLookChange(0f, 0f)
                                                 break
                                             }
@@ -1554,6 +1626,25 @@ fun ControllerScreen(
                 buzzStrong()
             },
             onDismiss = { showMoreDrawer = false }
+        )
+    }
+
+    if (showDataPage) {
+        DataOverlay(
+            telemetry = telemetry,
+            brakeTempC = brakeTempC,
+            speedUnitMph = settings.speedUnitMph,
+            accentColor = activeAccent,
+            onDismiss = { showDataPage = false }
+        )
+    }
+
+    if (showQuickDock) {
+        QuickDockOverlay(
+            accentColor = activeAccent,
+            telemetry = telemetry,
+            onTrigger = { bit -> onPulseBit(bit) },
+            onDismiss = { showQuickDock = false }
         )
     }
 
