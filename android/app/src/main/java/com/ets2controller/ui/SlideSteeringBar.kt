@@ -2,7 +2,9 @@ package com.ets2controller.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -62,6 +64,12 @@ fun SlideSteeringBar(
     val pos = remember { Animatable(0f) }
     val currentOnSteer by rememberUpdatedState(onSteerChange)
     val density = LocalDensity.current
+    var dragging by remember { mutableStateOf(false) }
+    val handleScale by animateFloatAsState(
+        targetValue = if (dragging) 1.07f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        label = "slideHandleScale"
+    )
 
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { currentOnSteer(slideCurve(it)) }
@@ -71,13 +79,15 @@ fun SlideSteeringBar(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(CockpitTile)
-            .border(1.dp, accentColor.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+            .border(1.dp, accentColor.copy(alpha = if (dragging) 0.95f else 0.6f), RoundedCornerShape(12.dp))
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    dragging = true
                     val id = down.id
                     val x0 = down.position.x
-                    val halfW = (size.width / 2f).coerceAtLeast(1f)
+                    // Cap single-thumb sweep at 130dp so full lock never requires crossing a 600dp bar
+                    val halfW = min(size.width / 2f, 130.dp.toPx()).coerceAtLeast(1f)
                     while (true) {
                         val ev = awaitPointerEvent()
                         val ch = ev.changes.firstOrNull { it.id == id }
@@ -86,6 +96,7 @@ fun SlideSteeringBar(
                         scope.launch { pos.snapTo(n) }
                         ch.consume()
                     }
+                    dragging = false
                     scope.launch {
                         pos.animateTo(0f, spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium))
                     }
@@ -148,6 +159,7 @@ fun SlideSteeringBar(
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 .offset { IntOffset(handleX.roundToInt(), 0) }
+                .graphicsLayer { scaleX = handleScale; scaleY = handleScale }
                 .size(width = handleW, height = maxHeight - 8.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(accentColor),

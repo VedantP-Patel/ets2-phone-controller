@@ -35,7 +35,11 @@ data class ControllerSettings(
     val slideOffCancel: Boolean = true,
     val hazardNeedsHold: Boolean = true,
     val speedSensitivity: Float = 0.4f,
-    val speedSensitiveDeadzone: Boolean = true
+    val speedSensitiveDeadzone: Boolean = true,
+    // Ergonomics & motion preferences
+    val ergonomicLayout: Boolean = true,
+    val relativePedalDrag: Boolean = false,
+    val reduceMotion: Boolean = false
 )
 
 class SettingsRepository(context: Context) {
@@ -88,7 +92,10 @@ class SettingsRepository(context: Context) {
             slideOffCancel = prefs.getBoolean("slide_off_cancel", true),
             hazardNeedsHold = prefs.getBoolean("hazard_needs_hold", true),
             speedSensitivity = prefs.getFloat("speed_sensitivity", 0.4f),
-            speedSensitiveDeadzone = prefs.getBoolean("speed_sensitive_deadzone", true)
+            speedSensitiveDeadzone = prefs.getBoolean("speed_sensitive_deadzone", true),
+            ergonomicLayout = prefs.getBoolean("ergonomic_layout", true),
+            relativePedalDrag = prefs.getBoolean("relative_pedal_drag", false),
+            reduceMotion = prefs.getBoolean("reduce_motion", false)
         )
     }
 
@@ -125,6 +132,9 @@ class SettingsRepository(context: Context) {
             .putBoolean("hazard_needs_hold", settings.hazardNeedsHold)
             .putFloat("speed_sensitivity", settings.speedSensitivity)
             .putBoolean("speed_sensitive_deadzone", settings.speedSensitiveDeadzone)
+            .putBoolean("ergonomic_layout", settings.ergonomicLayout)
+            .putBoolean("relative_pedal_drag", settings.relativePedalDrag)
+            .putBoolean("reduce_motion", settings.reduceMotion)
             .apply()
     }
 }

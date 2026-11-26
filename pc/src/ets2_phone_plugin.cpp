@@ -27,14 +27,19 @@
 
 #include "protocol.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
+#endif
 
 namespace {
 
-constexpr size_t NUM_ANALOG_AXES   = 6;
-constexpr size_t NUM_BUTTON_CHANS  = 60;
-constexpr size_t TOTAL_INPUT_CHANS = NUM_ANALOG_AXES + NUM_BUTTON_CHANS;
+constexpr size_t NUM_ANALOG_AXES     = 6;
+constexpr size_t NUM_BUTTON_CHANS    = 60;
+constexpr size_t TOTAL_INPUT_CHANS   = NUM_ANALOG_AXES + NUM_BUTTON_CHANS;
+constexpr size_t MAX_MONITORED_WHEELS = 8;
+
+enum class ActiveTransport { NONE, UDP, TCP };
 
 struct SharedControlState {
     std::atomic<float>    axes[NUM_ANALOG_AXES]{};
@@ -42,14 +47,22 @@ struct SharedControlState {
     std::atomic<uint64_t> latchedPressMask{0};
     std::atomic<uint16_t> lastClientTs{0};
     std::atomic<bool>     hasClient{false};
+    std::atomic<bool>     coachSmoothMode{false};
 };
 
 struct LiveTelemetryCache {
     std::mutex mtx;
     TruckTelemetryPacket pkt{};
-    float fuelCapacityLiters   = 800.0f;
-    float adblueCapacityLiters = 80.0f;
-    float wearValues[5]{};
+    float    fuelCapacityLiters   = 800.0f;
+    float    adblueCapacityLiters = 80.0f;
+    float    wearValues[5]{};
+    uint32_t wheelCount           = 4;
+    float    prevSuspDefl[MAX_MONITORED_WHEELS]{};
+    bool     hasPrevSusp[MAX_MONITORED_WHEELS]{};
+    bool     wheelOnGround[MAX_MONITORED_WHEELS]{};
+    uint32_t wheelSubstance[MAX_MONITORED_WHEELS]{};
+    float    suspRumblePeak       = 0.0f;
+    float    surfaceRumbleLevel   = 0.0f;
 };
 
 SharedControlState g_ctrl;
@@ -214,6 +227,32 @@ void zeroAllControls() {
     g_ctrl.latchedPressMask.store(0ULL, std::memory_order_relaxed);
 }
 
+void applyControlPacket(const PhoneControlPacket& pkt, uint64_t mergedMask, uint64_t& prevPacketMask) {
+    g_ctrl.axes[0].store(static_cast<float>(pkt.steering) / 32767.0f, std::memory_order_relaxed);
+    g_ctrl.axes[1].store(static_cast<float>(pkt.throttle) / 65535.0f, std::memory_order_relaxed);
+    g_ctrl.axes[2].store(static_cast<float>(pkt.brake)    / 65535.0f, std::memory_order_relaxed);
+    g_ctrl.axes[3].store(static_cast<float>(pkt.clutch)   / 65535.0f, std::memory_order_relaxed);
+
+    const bool lookAutocenter = (pkt.flags & UPLINK_FLAG_LOOK_AUTOCENTER) != 0;
+    float lx = static_cast<float>(pkt.lookX) / 32767.0f;
+    float ly = static_cast<float>(pkt.lookY) / 32767.0f;
+    if (lookAutocenter && std::abs(pkt.lookX) < 16 && std::abs(pkt.lookY) < 16) {
+        lx = 0.0f;
+        ly = 0.0f;
+    }
+    g_ctrl.axes[4].store(lx, std::memory_order_relaxed);
+    g_ctrl.axes[5].store(ly, std::memory_order_relaxed);
+    g_ctrl.coachSmoothMode.store((pkt.flags & UPLINK_FLAG_COACH_SMOOTH_MODE) != 0, std::memory_order_relaxed);
+
+    const uint64_t newlyPressed = mergedMask & ~prevPacketMask;
+    prevPacketMask = mergedMask;
+    if (newlyPressed != 0) {
+        g_ctrl.latchedPressMask.fetch_or(newlyPressed, std::memory_order_relaxed);
+    }
+    g_ctrl.buttonMask.store(mergedMask, std::memory_order_relaxed);
+    g_ctrl.lastClientTs.store(pkt.clientTimestampMs, std::memory_order_relaxed);
+}
+
 void networkWorker() {
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -235,6 +274,9 @@ void networkWorker() {
     DWORD bytesRet = 0;
     WSAIoctl(g_udpSocket, _WSAIOW(IOC_VENDOR, 12), &connReset, sizeof(connReset), nullptr, 0, &bytesRet, nullptr, nullptr);
 
+    u_long nonBlocking = 1;
+    ioctlsocket(g_udpSocket, FIONBIO, &nonBlocking);
+
     sockaddr_in bindAddr{};
     bindAddr.sin_family = AF_INET;
     bindAddr.sin_port = htons(PORT_CONTROL);
@@ -250,91 +292,176 @@ void networkWorker() {
         return;
     }
 
+    // Optional local TCP loopback listener on 127.0.0.1:5005 for ADB reverse wired USB mode
+    SOCKET tcpListenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (tcpListenSock != INVALID_SOCKET) {
+        BOOL reuse = TRUE;
+        setsockopt(tcpListenSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+        ioctlsocket(tcpListenSock, FIONBIO, &nonBlocking);
+
+        sockaddr_in tcpAddr{};
+        tcpAddr.sin_family = AF_INET;
+        tcpAddr.sin_port = htons(PORT_CONTROL);
+        tcpAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (bind(tcpListenSock, reinterpret_cast<sockaddr*>(&tcpAddr), sizeof(tcpAddr)) == SOCKET_ERROR ||
+            listen(tcpListenSock, 2) == SOCKET_ERROR) {
+            closesocket(tcpListenSock);
+            tcpListenSock = INVALID_SOCKET;
+        }
+    }
+
     {
-        char okBuf[96];
-        std::snprintf(okBuf, sizeof(okBuf), "[ETS2Phone] Listening on UDP port %u.", PORT_CONTROL);
+        char okBuf[128];
+        std::snprintf(okBuf, sizeof(okBuf), "[ETS2Phone] Listening on UDP %u (and local TCP loopback %s).",
+                      PORT_CONTROL, tcpListenSock != INVALID_SOCKET ? "active" : "unavailable");
         logInfo(okBuf);
     }
 
-    WSAEVENT netEvent = WSACreateEvent();
-    WSAEventSelect(g_udpSocket, netEvent, FD_READ);
+    SOCKET tcpClientSock = INVALID_SOCKET;
+    uint8_t tcpStream[256]{};
+    size_t tcpStreamLen = 0;
 
     uint16_t lastSeq = 0;
     uint64_t prevPacketMask = 0;
     bool hasSeq = false;
     sockaddr_in activeSource{};
+    ActiveTransport activeTransport = ActiveTransport::NONE;
     auto lastPacketRx = std::chrono::steady_clock::now();
     auto lastTelemSend = std::chrono::steady_clock::now();
     uint8_t rxBuf[128];
 
     while (g_netRunning.load(std::memory_order_acquire)) {
-        DWORD waitRes = WSAWaitForMultipleEvents(1, &netEvent, FALSE, 20, FALSE);
-        if (waitRes == WSA_WAIT_EVENT_0) {
-            WSAResetEvent(netEvent);
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(g_udpSocket, &readSet);
+        if (tcpListenSock != INVALID_SOCKET) FD_SET(tcpListenSock, &readSet);
+        if (tcpClientSock != INVALID_SOCKET) FD_SET(tcpClientSock, &readSet);
 
-            uint64_t mergedMask = g_ctrl.buttonMask.load(std::memory_order_relaxed);
-            bool gotAny = false;
-            PhoneControlPacket latest{};
-            sockaddr_in latestFrom{};
+        timeval tv{0, 10000}; // 10 ms select timeout
+        int sel = select(0, &readSet, nullptr, nullptr, &tv);
 
-            while (true) {
-                sockaddr_in from{};
-                int fromLen = sizeof(from);
-                int r = recvfrom(g_udpSocket, reinterpret_cast<char*>(rxBuf), sizeof(rxBuf), 0,
-                                 reinterpret_cast<sockaddr*>(&from), &fromLen);
-                if (r <= 0) break;
-
-                PhoneControlPacket pkt{};
-                if (validateControlPacket(rxBuf, static_cast<size_t>(r), &pkt)) {
-                    // Reset sequence tracking if client IP/port changed or app restarted (seq jumped backward)
-                    bool sourceChanged = (from.sin_addr.s_addr != activeSource.sin_addr.s_addr) ||
-                                         (from.sin_port != activeSource.sin_port);
-                    if (sourceChanged) {
-                        hasSeq = false;
-                        activeSource = from;
-                    }
-
-                    if (hasSeq) {
-                        int16_t diff = static_cast<int16_t>(pkt.sequenceId - lastSeq);
-                        if (diff <= 0 && diff > -200) continue; // Ignore minor out-of-order jitter only
-                    }
-
-                    lastSeq = pkt.sequenceId;
-                    hasSeq = true;
-                    mergedMask = gotAny ? (mergedMask | pkt.buttonMask) : pkt.buttonMask;
-                    latest = pkt;
-                    latestFrom = from;
-                    gotAny = true;
+        if (sel > 0) {
+            // 1. Accept incoming ADB USB TCP client
+            if (tcpListenSock != INVALID_SOCKET && FD_ISSET(tcpListenSock, &readSet)) {
+                SOCKET incoming = accept(tcpListenSock, nullptr, nullptr);
+                if (incoming != INVALID_SOCKET) {
+                    if (tcpClientSock != INVALID_SOCKET) closesocket(tcpClientSock);
+                    tcpClientSock = incoming;
+                    tcpStreamLen = 0;
+                    BOOL noDelay = TRUE;
+                    setsockopt(tcpClientSock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+                    ioctlsocket(tcpClientSock, FIONBIO, &nonBlocking);
+                    hasSeq = false;
+                    logInfo("[ETS2Phone] USB ADB TCP client connected on loopback.");
                 }
             }
 
-            if (gotAny) {
-                lastPacketRx = std::chrono::steady_clock::now();
-                g_ctrl.axes[0].store(static_cast<float>(latest.steering) / 32767.0f, std::memory_order_relaxed);
-                g_ctrl.axes[1].store(static_cast<float>(latest.throttle) / 65535.0f, std::memory_order_relaxed);
-                g_ctrl.axes[2].store(static_cast<float>(latest.brake)    / 65535.0f, std::memory_order_relaxed);
-                g_ctrl.axes[3].store(static_cast<float>(latest.clutch)   / 65535.0f, std::memory_order_relaxed);
-                g_ctrl.axes[4].store(static_cast<float>(latest.lookX)    / 32767.0f, std::memory_order_relaxed);
-                g_ctrl.axes[5].store(static_cast<float>(latest.lookY)    / 32767.0f, std::memory_order_relaxed);
-                uint64_t newlyPressed = mergedMask & ~prevPacketMask;
-prevPacketMask = mergedMask;
-if (newlyPressed != 0) {
-    g_ctrl.latchedPressMask.fetch_or(newlyPressed, std::memory_order_relaxed);
-}
-g_ctrl.buttonMask.store(mergedMask, std::memory_order_relaxed);
-                g_ctrl.lastClientTs.store(latest.clientTimestampMs, std::memory_order_relaxed);
+            // 2. Drain UDP packets
+            if (FD_ISSET(g_udpSocket, &readSet)) {
+                uint64_t mergedMask = g_ctrl.buttonMask.load(std::memory_order_relaxed);
+                bool gotAny = false;
+                PhoneControlPacket latest{};
+                sockaddr_in latestFrom{};
 
-                bool wasConnected = g_ctrl.hasClient.exchange(true, std::memory_order_relaxed);
-                {
-                    std::lock_guard<std::mutex> lock(g_clientAddrMtx);
-                    g_clientAddr = latestFrom;
+                while (true) {
+                    sockaddr_in from{};
+                    int fromLen = sizeof(from);
+                    int r = recvfrom(g_udpSocket, reinterpret_cast<char*>(rxBuf), sizeof(rxBuf), 0,
+                                     reinterpret_cast<sockaddr*>(&from), &fromLen);
+                    if (r <= 0) break;
+
+                    PhoneControlPacket pkt{};
+                    if (validateControlPacket(rxBuf, static_cast<size_t>(r), &pkt)) {
+                        const bool sourceChanged = (activeTransport != ActiveTransport::UDP) ||
+                                                   (from.sin_addr.s_addr != activeSource.sin_addr.s_addr) ||
+                                                   (from.sin_port != activeSource.sin_port);
+                        if (sourceChanged) {
+                            hasSeq = false;
+                            activeSource = from;
+                        }
+                        if (hasSeq) {
+                            int16_t diff = static_cast<int16_t>(pkt.sequenceId - lastSeq);
+                            if (diff <= 0 && diff > -200) continue;
+                        }
+                        lastSeq = pkt.sequenceId;
+                        hasSeq = true;
+                        mergedMask = gotAny ? (mergedMask | pkt.buttonMask) : pkt.buttonMask;
+                        latest = pkt;
+                        latestFrom = from;
+                        gotAny = true;
+                    }
                 }
-                if (!wasConnected) {
-                    char ipStr[INET_ADDRSTRLEN]{};
-                    inet_ntop(AF_INET, &latestFrom.sin_addr, ipStr, sizeof(ipStr));
-                    char msg[128];
-                    std::snprintf(msg, sizeof(msg), "[ETS2Phone] Phone connected from %s:%u", ipStr, ntohs(latestFrom.sin_port));
-                    logInfo(msg);
+
+                if (gotAny) {
+                    lastPacketRx = std::chrono::steady_clock::now();
+                    activeTransport = ActiveTransport::UDP;
+                    applyControlPacket(latest, mergedMask, prevPacketMask);
+
+                    bool wasConnected = g_ctrl.hasClient.exchange(true, std::memory_order_relaxed);
+                    {
+                        std::lock_guard<std::mutex> lock(g_clientAddrMtx);
+                        g_clientAddr = latestFrom;
+                    }
+                    if (!wasConnected) {
+                        char ipStr[INET_ADDRSTRLEN]{};
+                        inet_ntop(AF_INET, &latestFrom.sin_addr, ipStr, sizeof(ipStr));
+                        char msg[128];
+                        std::snprintf(msg, sizeof(msg), "[ETS2Phone] Phone connected (UDP) from %s:%u", ipStr, ntohs(latestFrom.sin_port));
+                        logInfo(msg);
+                    }
+                }
+            }
+
+            // 3. Drain TCP stream packets (ADB USB wired mode)
+            if (tcpClientSock != INVALID_SOCKET && FD_ISSET(tcpClientSock, &readSet)) {
+                while (tcpStreamLen < sizeof(tcpStream)) {
+                    int r = recv(tcpClientSock, reinterpret_cast<char*>(tcpStream + tcpStreamLen),
+                                 static_cast<int>(sizeof(tcpStream) - tcpStreamLen), 0);
+                    if (r > 0) {
+                        tcpStreamLen += static_cast<size_t>(r);
+                    } else if (r == 0 || (r == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK)) {
+                        closesocket(tcpClientSock);
+                        tcpClientSock = INVALID_SOCKET;
+                        tcpStreamLen = 0;
+                        if (activeTransport == ActiveTransport::TCP) {
+                            activeTransport = ActiveTransport::NONE;
+                            zeroAllControls();
+                        }
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                uint64_t mergedMask = g_ctrl.buttonMask.load(std::memory_order_relaxed);
+                bool gotTcp = false;
+                PhoneControlPacket latestTcp{};
+                size_t cursor = 0;
+                while (cursor + sizeof(PhoneControlPacket) <= tcpStreamLen) {
+                    PhoneControlPacket pkt{};
+                    if (validateControlPacket(tcpStream + cursor, sizeof(PhoneControlPacket), &pkt)) {
+                        mergedMask = gotTcp ? (mergedMask | pkt.buttonMask) : pkt.buttonMask;
+                        latestTcp = pkt;
+                        gotTcp = true;
+                        cursor += sizeof(PhoneControlPacket);
+                    } else {
+                        ++cursor; // Resynchronize to next valid magic/checksum boundary
+                    }
+                }
+                if (cursor > 0) {
+                    if (cursor < tcpStreamLen) {
+                        std::memmove(tcpStream, tcpStream + cursor, tcpStreamLen - cursor);
+                    }
+                    tcpStreamLen -= cursor;
+                }
+
+                if (gotTcp) {
+                    lastPacketRx = std::chrono::steady_clock::now();
+                    activeTransport = ActiveTransport::TCP;
+                    hasSeq = true;
+                    lastSeq = latestTcp.sequenceId;
+                    applyControlPacket(latestTcp, mergedMask, prevPacketMask);
+                    g_ctrl.hasClient.store(true, std::memory_order_relaxed);
                 }
             }
         }
@@ -355,21 +482,34 @@ g_ctrl.buttonMask.store(mergedMask, std::memory_order_relaxed);
             {
                 std::lock_guard<std::mutex> lock(g_telem.mtx);
                 outPkt = g_telem.pkt;
+                // Exponential decay on suspension impulse and surface buzz between physics frames
+                g_telem.suspRumblePeak *= 0.65f;
+                g_telem.surfaceRumbleLevel *= 0.75f;
             }
             outPkt.echoTimestampMs = g_ctrl.lastClientTs.load(std::memory_order_relaxed);
             finalizeTelemetryPacket(&outPkt);
 
-            sockaddr_in dest{};
-            {
-                std::lock_guard<std::mutex> lock(g_clientAddrMtx);
-                dest = g_clientAddr;
+            if (activeTransport == ActiveTransport::TCP && tcpClientSock != INVALID_SOCKET) {
+                int sent = send(tcpClientSock, reinterpret_cast<const char*>(&outPkt), sizeof(outPkt), 0);
+                if (sent == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
+                    closesocket(tcpClientSock);
+                    tcpClientSock = INVALID_SOCKET;
+                    activeTransport = ActiveTransport::NONE;
+                }
+            } else if (activeTransport == ActiveTransport::UDP) {
+                sockaddr_in dest{};
+                {
+                    std::lock_guard<std::mutex> lock(g_clientAddrMtx);
+                    dest = g_clientAddr;
+                }
+                sendto(g_udpSocket, reinterpret_cast<const char*>(&outPkt), sizeof(outPkt), 0,
+                       reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
             }
-            sendto(g_udpSocket, reinterpret_cast<const char*>(&outPkt), sizeof(outPkt), 0,
-                   reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
         }
     }
 
-    WSACloseEvent(netEvent);
+    if (tcpClientSock != INVALID_SOCKET) closesocket(tcpClientSock);
+    if (tcpListenSock != INVALID_SOCKET) closesocket(tcpListenSock);
     closesocket(g_udpSocket);
     g_udpSocket = INVALID_SOCKET;
     WSACleanup();
@@ -455,9 +595,25 @@ void ensureNetworkStopped() {
 
 SCSAPI_VOID onConfiguration(const scs_event_t, const void* const eventInfo, const scs_context_t) {
     const auto* info = static_cast<const scs_telemetry_configuration_t*>(eventInfo);
-    if (!info || !info->id || std::strcmp(info->id, SCS_TELEMETRY_CONFIG_truck) != 0) return;
+    if (!info || !info->id) return;
 
     std::lock_guard<std::mutex> lock(g_telem.mtx);
+    if (std::strcmp(info->id, SCS_TELEMETRY_CONFIG_controls) == 0) {
+        for (const scs_named_value_t* cur = info->attributes; cur && cur->name; ++cur) {
+            if (std::strcmp(cur->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_shifter_type) == 0 &&
+                cur->value.type == SCS_VALUE_TYPE_string && cur->value.value_string.value) {
+                const char* st = cur->value.value_string.value;
+                const bool isAuto = (std::strcmp(st, SCS_SHIFTER_TYPE_arcade) == 0 ||
+                                     std::strcmp(st, SCS_SHIFTER_TYPE_automatic) == 0);
+                if (isAuto) g_telem.pkt.safetyFlags |= SAFETY_AUTO_TRANSMISSION;
+                else        g_telem.pkt.safetyFlags &= ~SAFETY_AUTO_TRANSMISSION;
+            }
+        }
+        return;
+    }
+
+    if (std::strcmp(info->id, SCS_TELEMETRY_CONFIG_truck) != 0) return;
+
     for (const scs_named_value_t* cur = info->attributes; cur && cur->name; ++cur) {
         if (std::strcmp(cur->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_rpm_limit) == 0 && cur->value.type == SCS_VALUE_TYPE_float) {
             g_telem.pkt.maxRpm = cur->value.value_float.value;
@@ -467,6 +623,12 @@ SCSAPI_VOID onConfiguration(const scs_event_t, const void* const eventInfo, cons
             g_telem.adblueCapacityLiters = std::max(1.0f, cur->value.value_float.value);
         } else if (std::strcmp(cur->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_forward_gear_count) == 0 && cur->value.type == SCS_VALUE_TYPE_u32) {
             g_telem.pkt.forwardGears = static_cast<uint8_t>(cur->value.value_u32.value);
+        } else if (std::strcmp(cur->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_count) == 0 && cur->value.type == SCS_VALUE_TYPE_u32) {
+            g_telem.wheelCount = std::min<uint32_t>(cur->value.value_u32.value, static_cast<uint32_t>(MAX_MONITORED_WHEELS));
+            for (size_t w = 0; w < MAX_MONITORED_WHEELS; ++w) {
+                g_telem.hasPrevSusp[w] = false;
+                g_telem.prevSuspDefl[w] = 0.0f;
+            }
         }
     }
 }
@@ -481,12 +643,6 @@ SCSAPI_VOID onTelemS32(const scs_string_t, const scs_u32_t, const scs_value_t* c
     if (!val || val->type != SCS_VALUE_TYPE_s32 || !ctx) return;
     std::lock_guard<std::mutex> lock(g_telem.mtx);
     *static_cast<int8_t*>(ctx) = static_cast<int8_t>(val->value_s32.value);
-}
-
-SCSAPI_VOID onTelemU32(const scs_string_t, const scs_u32_t, const scs_value_t* const val, const scs_context_t ctx) {
-    if (!val || val->type != SCS_VALUE_TYPE_u32 || !ctx) return;
-    std::lock_guard<std::mutex> lock(g_telem.mtx);
-    *static_cast<uint8_t*>(ctx) = static_cast<uint8_t>(val->value_u32.value);
 }
 
 SCSAPI_VOID onTelemBoolDash(const scs_string_t, const scs_u32_t, const scs_value_t* const val, const scs_context_t ctx) {
@@ -564,6 +720,68 @@ SCSAPI_VOID onTelemWear(const scs_string_t, const scs_u32_t, const scs_value_t* 
     g_telem.pkt.truckDamagePct = static_cast<uint8_t>(std::clamp(maxW * 100.0f, 0.0f, 100.0f));
 }
 
+SCSAPI_VOID onTelemRetarder(const scs_string_t, const scs_u32_t, const scs_value_t* const val, const scs_context_t) {
+    if (!val || val->type != SCS_VALUE_TYPE_u32) return;
+    const uint8_t lvl = static_cast<uint8_t>(val->value_u32.value);
+    std::lock_guard<std::mutex> lock(g_telem.mtx);
+    g_telem.pkt.retarderLevel = lvl;
+    if (lvl > 0) g_telem.pkt.dashboardFlags |= DASH_RETARDER_ACTIVE;
+    else         g_telem.pkt.dashboardFlags &= ~DASH_RETARDER_ACTIVE;
+}
+
+SCSAPI_VOID onTelemTempC(const scs_string_t, const scs_u32_t, const scs_value_t* const val, const scs_context_t ctx) {
+    if (!val || val->type != SCS_VALUE_TYPE_float || !ctx) return;
+    std::lock_guard<std::mutex> lock(g_telem.mtx);
+    *static_cast<int16_t*>(ctx) = static_cast<int16_t>(std::lround(val->value_float.value));
+}
+
+SCSAPI_VOID onTelemVolts10(const scs_string_t, const scs_u32_t, const scs_value_t* const val, const scs_context_t) {
+    if (!val || val->type != SCS_VALUE_TYPE_float) return;
+    const float v10 = std::clamp(val->value_float.value * 10.0f, 0.0f, 255.0f);
+    std::lock_guard<std::mutex> lock(g_telem.mtx);
+    g_telem.pkt.batteryVolts10 = static_cast<uint8_t>(std::lround(v10));
+}
+
+SCSAPI_VOID onTelemWheelSusp(const scs_string_t, const scs_u32_t index, const scs_value_t* const val, const scs_context_t) {
+    if (!val || val->type != SCS_VALUE_TYPE_float || index >= MAX_MONITORED_WHEELS) return;
+    const float defl = val->value_float.value;
+    std::lock_guard<std::mutex> lock(g_telem.mtx);
+    if (g_telem.hasPrevSusp[index]) {
+        const float delta = std::abs(defl - g_telem.prevSuspDefl[index]);
+        // Rapid suspension deflection (>8mm in one tick) signals curbs, bumps, or rumble strips
+        if (delta > 0.008f && g_telem.pkt.speedKmh > 2.0f) {
+            const float impulse = std::min(255.0f, (delta - 0.008f) * 3200.0f);
+            g_telem.suspRumblePeak = std::max(g_telem.suspRumblePeak, impulse);
+        }
+    }
+    g_telem.prevSuspDefl[index] = defl;
+    g_telem.hasPrevSusp[index] = true;
+}
+
+SCSAPI_VOID onTelemWheelOnGround(const scs_string_t, const scs_u32_t index, const scs_value_t* const val, const scs_context_t) {
+    if (!val || val->type != SCS_VALUE_TYPE_bool || index >= MAX_MONITORED_WHEELS) return;
+    std::lock_guard<std::mutex> lock(g_telem.mtx);
+    g_telem.wheelOnGround[index] = (val->value_bool.value != 0);
+}
+
+SCSAPI_VOID onTelemWheelSubstance(const scs_string_t, const scs_u32_t index, const scs_value_t* const val, const scs_context_t) {
+    if (!val || val->type != SCS_VALUE_TYPE_u32 || index >= MAX_MONITORED_WHEELS) return;
+    const uint32_t sub = val->value_u32.value;
+    std::lock_guard<std::mutex> lock(g_telem.mtx);
+    const uint32_t prev = g_telem.wheelSubstance[index];
+    g_telem.wheelSubstance[index] = sub;
+    if (g_telem.pkt.speedKmh > 5.0f && g_telem.wheelOnGround[index]) {
+        // Substance transition (e.g. asphalt <-> rumble strip / gravel) yields tactile kick
+        if (sub != prev) {
+            g_telem.surfaceRumbleLevel = std::max(g_telem.surfaceRumbleLevel, 110.0f);
+        } else if (sub > 0) {
+            // Non-asphalt continuous road texture scaled by speed
+            const float speedNorm = std::min(1.0f, g_telem.pkt.speedKmh / 60.0f);
+            g_telem.surfaceRumbleLevel = std::max(g_telem.surfaceRumbleLevel, 65.0f * speedNorm);
+        }
+    }
+}
+
 SCSAPI_VOID onTelemAccel(const scs_string_t, const scs_u32_t, const scs_value_t* const val, const scs_context_t) {
     if (!val || val->type != SCS_VALUE_TYPE_fvector) return;
     const float latG  = (val->value_fvector.x / 9.80665f) * 100.0f;
@@ -574,8 +792,12 @@ SCSAPI_VOID onTelemAccel(const scs_string_t, const scs_u32_t, const scs_value_t*
 
     const float rpmNorm = (g_telem.pkt.maxRpm > 100.0f) ? (g_telem.pkt.engineRpm / g_telem.pkt.maxRpm) : 0.0f;
     const float gPeak   = std::max(std::abs(latG), std::abs(longG));
-    g_telem.pkt.rumbleSmall = static_cast<uint8_t>(std::min(255.0f, rpmNorm * 55.0f));
-    g_telem.pkt.rumbleLarge = (gPeak > 28.0f) ? static_cast<uint8_t>(std::min(255.0f, (gPeak - 28.0f) * 4.5f)) : 0;
+    const float gLarge  = (gPeak > 28.0f) ? std::min(255.0f, (gPeak - 28.0f) * 4.5f) : 0.0f;
+
+    const float combinedSmall = std::max(rpmNorm * 55.0f, g_telem.surfaceRumbleLevel);
+    const float combinedLarge = std::max(gLarge, g_telem.suspRumblePeak);
+    g_telem.pkt.rumbleSmall = static_cast<uint8_t>(std::clamp(combinedSmall, 0.0f, 255.0f));
+    g_telem.pkt.rumbleLarge = static_cast<uint8_t>(std::clamp(combinedLarge, 0.0f, 255.0f));
 }
 
 } // namespace
@@ -645,7 +867,16 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_fuel, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemFuelLiters, nullptr);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_adblue, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemAdblueLiters, nullptr);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_local_linear_acceleration, SCS_U32_NIL, SCS_VALUE_TYPE_fvector, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemAccel, nullptr);
-    reg(SCS_TELEMETRY_TRUCK_CHANNEL_retarder_level, SCS_U32_NIL, SCS_VALUE_TYPE_u32, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemU32, &g_telem.pkt.retarderLevel);
+    reg(SCS_TELEMETRY_TRUCK_CHANNEL_retarder_level, SCS_U32_NIL, SCS_VALUE_TYPE_u32, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemRetarder, nullptr);
+    reg(SCS_TELEMETRY_TRUCK_CHANNEL_oil_temperature, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemTempC, &g_telem.pkt.oilTempC);
+    reg(SCS_TELEMETRY_TRUCK_CHANNEL_water_temperature, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemTempC, &g_telem.pkt.waterTempC);
+    reg(SCS_TELEMETRY_TRUCK_CHANNEL_battery_voltage, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemVolts10, nullptr);
+
+    for (scs_u32_t w = 0; w < static_cast<scs_u32_t>(MAX_MONITORED_WHEELS); ++w) {
+        reg(SCS_TELEMETRY_TRUCK_CHANNEL_wheel_susp_deflection, w, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemWheelSusp, nullptr);
+        reg(SCS_TELEMETRY_TRUCK_CHANNEL_wheel_on_ground, w, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemWheelOnGround, nullptr);
+        reg(SCS_TELEMETRY_TRUCK_CHANNEL_wheel_substance, w, SCS_VALUE_TYPE_u32, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemWheelSubstance, nullptr);
+    }
 
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_wear_engine, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemWear, reinterpret_cast<scs_context_t>(0));
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_wear_transmission, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemWear, reinterpret_cast<scs_context_t>(1));
@@ -660,7 +891,6 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_electric_enabled, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolDash, reinterpret_cast<scs_context_t>(DASH_ENGINE_RUNNING));
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_brake_air_pressure_warning, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolDash, reinterpret_cast<scs_context_t>(DASH_LOW_AIR_WARN));
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_motor_brake, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolDash, reinterpret_cast<scs_context_t>(DASH_ENGINE_BRK_ACTIVE));
-    reg(SCS_TELEMETRY_TRUCK_CHANNEL_light_low_beam, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolDash, reinterpret_cast<scs_context_t>(DASH_LOW_BEAMS));
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_light_parking, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolSafety, reinterpret_cast<scs_context_t>(SAFETY_PARK_LIGHTS));
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_light_low_beam, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolDash, reinterpret_cast<scs_context_t>(DASH_LOW_BEAMS));
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_light_high_beam, SCS_U32_NIL, SCS_VALUE_TYPE_bool, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemBoolDash, reinterpret_cast<scs_context_t>(DASH_HIGH_BEAMS));

@@ -71,7 +71,7 @@ fun DataOverlay(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 DataTabButton("TRIP", "route", tab == DataTab.TRIP, accentColor) { tab = DataTab.TRIP }
-                DataTabButton("TRUCK", "gear", tab == DataTab.TRUCK, accentColor) { tab = DataTab.TRUCK }
+                DataTabButton("TRUCK", "truck", tab == DataTab.TRUCK, accentColor) { tab = DataTab.TRUCK }
             }
             Text(
                 text = if (isAuto) "GEARBOX: AUTOMATIC \u00B7 CLUTCH HIDDEN" else "GEARBOX: MANUAL \u00B7 CLUTCH SHOWN",
@@ -202,9 +202,31 @@ private fun TruckPage(t: TruckTelemetryV2, brakeTempC: Float, accent: Color, mod
                     ArcGauge("CRUISE SET", if (t.cruiseSpeedKmh > 0) "${t.cruiseSpeedKmh} km/h" else "OFF", (t.cruiseSpeedKmh / 130f).coerceIn(0f, 1f), none, false, Modifier.weight(1f).fillMaxHeight())
                 }
                 Row(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ArcGauge("OIL TEMP (NO DATA)", "\u2014", null, none, false, Modifier.weight(1f).fillMaxHeight())
-                    ArcGauge("WATER TEMP (NO DATA)", "\u2014", null, none, false, Modifier.weight(1f).fillMaxHeight())
-                    ArcGauge("BATTERY (NO DATA)", "\u2014", null, none, false, Modifier.weight(1f).fillMaxHeight())
+                    val hasOil = t.oilTempC > 0
+                    val hasWater = t.waterTempC > 0
+                    val hasBatt = t.batteryVolts > 0.5f
+                    val oilZones = listOf(Triple(0f, 0.72f, ConnectedGreen), Triple(0.72f, 0.88f, AmberWarn), Triple(0.88f, 1f, BrakePedalRed))
+                    val waterZones = listOf(Triple(0f, 0.65f, ConnectedGreen), Triple(0.65f, 0.80f, AmberWarn), Triple(0.80f, 1f, BrakePedalRed))
+                    val battZones = listOf(Triple(0f, 0.38f, BrakePedalRed), Triple(0.38f, 0.48f, AmberWarn), Triple(0.48f, 1f, ConnectedGreen))
+
+                    ArcGauge(
+                        "OIL TEMP",
+                        if (hasOil) "${t.oilTempC}\u00B0C" else "\u2014",
+                        if (hasOil) ((t.oilTempC - 40f) / 90f).coerceIn(0f, 1f) else null,
+                        oilZones, t.oilTempC >= 115, Modifier.weight(1f).fillMaxHeight()
+                    )
+                    ArcGauge(
+                        "WATER TEMP",
+                        if (hasWater) "${t.waterTempC}\u00B0C" else "\u2014",
+                        if (hasWater) ((t.waterTempC - 40f) / 80f).coerceIn(0f, 1f) else null,
+                        waterZones, t.waterTempC >= 100, Modifier.weight(1f).fillMaxHeight()
+                    )
+                    ArcGauge(
+                        "BATTERY",
+                        if (hasBatt) "%.1f V".format(t.batteryVolts) else "\u2014",
+                        if (hasBatt) ((t.batteryVolts - 18f) / 12f).coerceIn(0f, 1f) else null,
+                        battZones, hasBatt && t.batteryVolts < 22.5f, Modifier.weight(1f).fillMaxHeight()
+                    )
                 }
             }
             DataCard("TANKS AND DAMAGE", Modifier.weight(2f).fillMaxHeight()) {

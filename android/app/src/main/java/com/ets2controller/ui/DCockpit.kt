@@ -5,13 +5,20 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.Animatable
@@ -46,6 +53,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -74,6 +84,7 @@ fun DesignCockpitScreen(
     savedManualIp: String,
     onSetManualIp: (String) -> Unit,
     rawAngleProvider: () -> Float,
+    sensorModeLabel: String = "GYRO",
     throttle: Float,
     brake: Float,
     clutch: Float,
@@ -182,8 +193,17 @@ fun DesignCockpitScreen(
         t.isCruiseActive -> Banner("Cruise ${(t.cruiseSpeedKmh * k).roundToInt()}", "gauge", CruiseSkyBlue, false)
         else -> null
     }
-    val rowH = (58f * settings.controlScale).dp
-    val edge = maxOf(12, settings.edgeGuardDp).dp
+    val layoutDir = LocalLayoutDirection.current
+    val cutoutPad = WindowInsets.displayCutout.asPaddingValues()
+    val safePad = WindowInsets.safeDrawing.asPaddingValues()
+    val userEdge = maxOf(12, settings.edgeGuardDp).dp
+    val leftEdge = maxOf(cutoutPad.calculateLeftPadding(layoutDir), safePad.calculateLeftPadding(layoutDir), userEdge)
+    val rightEdge = maxOf(cutoutPad.calculateRightPadding(layoutDir), safePad.calculateRightPadding(layoutDir), userEdge)
+    val topPad = maxOf(8.dp, cutoutPad.calculateTopPadding())
+    val navBottom = safePad.calculateBottomPadding()
+    val dockHandleH = 34.dp
+    val bottomPad = maxOf(dockHandleH + 4.dp, navBottom + dockHandleH)
+
     val holdMs = settings.holdConfirmMs.toLong()
     val slideOff = settings.slideOffCancel
     val retarderLevel = maxOf(t.retarderLevel, localRetarder).coerceIn(0, 4)
@@ -202,55 +222,110 @@ fun DesignCockpitScreen(
         onTouchSteerChange(if (m == SteerMode.GYRO) null else 0f)
     }
 
-    CompositionLocalProvider(LocalBlink provides blink, LocalBuzz provides buzz) {
-        Box(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
+    BackHandler(enabled = showMore || showDock || showData || showTuning || showConn) {
+        when {
+            showConn -> showConn = false
+            showTuning -> showTuning = false
+            showData -> showData = false
+            showMore -> showMore = false
+            showDock -> showDock = false
+        }
+    }
+
+    CompositionLocalProvider(
+        LocalBlink provides blink,
+        LocalBuzz provides buzz,
+        LocalAccent provides accent,
+        LocalReduceMotion provides settings.reduceMotion
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
+            val availW = (maxWidth - leftEdge - rightEdge).coerceAtLeast(320.dp)
+            val availH = (maxHeight - topPad - bottomPad).coerceAtLeast(240.dp)
+            val isNarrow = availW < 680.dp
+            val isCompactH = availH < 340.dp
+            val topBarH = if (isCompactH) 38.dp else 44.dp
+            val colGap = if (isNarrow) 8.dp else 10.dp
+            val bodyH = (availH - topBarH - 8.dp).coerceAtLeast(200.dp)
+            val sideW = (availW * 0.23f).coerceIn(154.dp, 224.dp)
+            val rowH = (bodyH * 0.175f * settings.controlScale).coerceIn(42.dp, 62.dp)
+            val turnH = (bodyH * 0.18f).coerceIn(44.dp, 60.dp)
+            val slideH = (bodyH * 0.21f).coerceIn(54.dp, 74.dp)
+
             Column(
-                modifier = Modifier.fillMaxSize().padding(start = edge, end = edge, top = 10.dp, bottom = 22.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.fillMaxSize().padding(start = leftEdge, end = rightEdge, top = topPad, bottom = bottomPad),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // ---------------- TOP BAR ----------------
                 Row(
-                    modifier = Modifier.fillMaxWidth().height(40.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth().height(topBarH),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.width(120.dp).clickable { showConn = true },
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    DCard(
+                        modifier = Modifier
+                            .weight(0.95f)
+                            .widthIn(min = 108.dp, max = 188.dp)
+                            .fillMaxHeight(),
+                        borderColor = if (isConnected) ConnectedGreen.copy(alpha = 0.5f) else CockpitBorder
                     ) {
-                        val dot by rememberInfiniteTransition(label = "linkDot").animateFloat(
-                            0.3f, 1f, infiniteRepeatable(tween(1000), RepeatMode.Reverse), label = "linkDotA"
-                        )
-                        Box(
-                            Modifier.size(8.dp).clip(CircleShape)
-                                .background((if (isConnected) ConnectedGreen else DisconnectedRed).copy(alpha = if (isConnected) dot else blink.value))
-                        )
-                        Text(
-                            if (isConnected) "PC LINKED" else "NO PC",
-                            color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp, maxLines = 1
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .semantics { contentDescription = if (isConnected) "PC linked, tap for connection" else "No PC, tap to connect" }
+                                .clickable { showConn = true }
+                                .padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val dot by rememberInfiniteTransition(label = "linkDot").animateFloat(
+                                0.3f, 1f, infiniteRepeatable(tween(1000), RepeatMode.Reverse), label = "linkDotA"
+                            )
+                            Box(
+                                Modifier.size(8.dp).clip(CircleShape)
+                                    .background((if (isConnected) ConnectedGreen else DisconnectedRed).copy(alpha = if (isConnected) dot else blink.value))
+                            )
+                            Text(
+                                if (isConnected) "${t.roundTripPingMs}ms \u00B7 $sensorModeLabel" else "NO PC \u00B7 $sensorModeLabel",
+                                color = if (isConnected) TextBright else TextMuted,
+                                fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.4.sp, maxLines = 1
+                            )
+                        }
                     }
-                    DCard(modifier = Modifier.width(300.dp).fillMaxHeight()) {
+                    DCard(modifier = Modifier.weight(1.45f).fillMaxHeight()) {
                         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.width(44.dp).fillMaxHeight().clickable { pulse(16) }, Alignment.Center) { DIcon("prev", TextBright, Modifier.size(16.dp)) }
+                            Box(
+                                Modifier.width(44.dp).fillMaxHeight()
+                                    .semantics { contentDescription = "Previous radio station" }
+                                    .clickable { pulse(16) },
+                                Alignment.Center
+                            ) { DIcon("prev", TextBright, Modifier.size(16.dp)) }
                             Row(
-                                Modifier.weight(1f).clickable { radioOn = !radioOn; pulse(14) },
+                                Modifier.weight(1f).fillMaxHeight()
+                                    .semantics { contentDescription = "Toggle cabin radio" }
+                                    .clickable { radioOn = !radioOn; pulse(14) },
                                 horizontalArrangement = Arrangement.Center,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 DEq(radioOn)
-                                Spacer(Modifier.width(10.dp))
-                                Text(if (radioOn) "CAB RADIO" else "TAP FOR RADIO", color = TextBright, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp, maxLines = 1)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (radioOn) "CAB RADIO" else if (isNarrow) "RADIO" else "TAP FOR RADIO",
+                                    color = TextBright, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp, maxLines = 1
+                                )
                             }
-                            Box(Modifier.width(44.dp).fillMaxHeight().clickable { pulse(15) }, Alignment.Center) { DIcon("next", TextBright, Modifier.size(16.dp)) }
+                            Box(
+                                Modifier.width(44.dp).fillMaxHeight()
+                                    .semantics { contentDescription = "Next radio station" }
+                                    .clickable { pulse(15) },
+                                Alignment.Center
+                            ) { DIcon("next", TextBright, Modifier.size(16.dp)) }
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        DModeSwitch(mode, accent) { setMode(it) }
-                        DTile("", "data", Modifier.size(44.dp, 40.dp), iconSize = 18.dp, onTap = { showData = true })
-                        DTile("", "more", Modifier.size(44.dp, 40.dp), tint = accent, iconSize = 20.dp, onTap = { showMore = true })
-                        DTile("", "gear", Modifier.size(44.dp, 40.dp), guarded = true, holdMs = holdMs, iconSize = 18.dp, onTap = { showTuning = true })
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        DModeSwitch(mode, accent, topBarH, isNarrow) { setMode(it) }
+                        DTile("", "data", Modifier.size(48.dp, topBarH), iconSize = 18.dp, onTap = { showData = true })
+                        DTile("", "more", Modifier.size(48.dp, topBarH), tint = accent, iconSize = 20.dp, onTap = { showMore = true })
+                        DTile("", "gear", Modifier.size(48.dp, topBarH), guarded = true, holdMs = holdMs, iconSize = 18.dp, onTap = { showTuning = true })
                     }
                 }
 
@@ -274,7 +349,9 @@ fun DesignCockpitScreen(
                             }
                         },
                         air = t.airPressureBar, airWarn = t.isLowAir || t.airPressureBar < 4.5f,
-                        fuel = t.fuelPercent, adblue = t.adbluePercent, brakeTemp = brakeTempC.roundToInt()
+                        fuel = t.fuelPercent, adblue = t.adbluePercent, brakeTemp = brakeTempC.roundToInt(),
+                        routeDistKm = t.routeDistanceKm, routeTimeMin = t.routeTimeMin, speedUnitMph = settings.speedUnitMph,
+                        onPeekChange = { lx -> onLookChange(lx, 0f) }
                     )
                 }
                 val retarder: @Composable (Modifier) -> Unit = { m ->
@@ -341,35 +418,51 @@ fun DesignCockpitScreen(
                     }
                 }
                 val brakePedal: @Composable (Modifier) -> Unit = { m ->
-                    DPedal("BRAKE", "brake", BrakePedalRed, brake, m, hot = brakeTempC > 350f, labelSize = 14) { onBrakeChange(it) }
+                    DPedal("BRAKE", "brake", BrakePedalRed, brake, m, hot = brakeTempC > 350f, relativeDrag = settings.relativePedalDrag, labelSize = 14) { onBrakeChange(it) }
                 }
                 val gasPedal: @Composable (Modifier) -> Unit = { m ->
-                    DPedal("GAS", "gas", GasPedalGreen, if (brakeWins) 0f else throttle, m, dimmed = brakeWins) {
+                    DPedal("GAS", "gas", GasPedalGreen, if (brakeWins) 0f else throttle, m, dimmed = brakeWins, relativeDrag = settings.relativePedalDrag) {
                         onThrottleChange(if (brakeWins) 0f else it)
                     }
                 }
+                val clutchPedal: @Composable (Modifier) -> Unit = { m ->
+                    DPedal("CLUTCH", "clutch", CruiseSkyBlue, clutch, m, relativeDrag = settings.relativePedalDrag, labelSize = 8) { onClutchChange(it) }
+                }
+                val lightsPair: @Composable (Modifier) -> Unit = { m ->
+                    Row(m, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        lights(Modifier.weight(1f).fillMaxHeight())
+                        highBeam(Modifier.weight(1f).fillMaxHeight())
+                    }
+                }
 
-                Row(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(colGap)) {
                     when (mode) {
                         SteerMode.GYRO -> {
                             val leftCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.width(200.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    turnLeft(Modifier.fillMaxWidth().height(60.dp))
-                                    horn(Modifier.fillMaxWidth().height(rowH))
-                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        lights(Modifier.weight(1f).fillMaxHeight())
-                                        highBeam(Modifier.weight(1f).fillMaxHeight())
-                                    }
-                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        if (!isAuto) DPedal("CLUTCH", "gear", CruiseSkyBlue, clutch, Modifier.width(48.dp).fillMaxHeight(), labelSize = 8) { onClutchChange(it) }
-                                        brakePedal(Modifier.weight(1f).fillMaxHeight())
+                                Column(Modifier.width(sideW).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (settings.ergonomicLayout) {
+                                        lightsPair(Modifier.fillMaxWidth().height(rowH))
+                                        turnLeft(Modifier.fillMaxWidth().height(turnH))
+                                        horn(Modifier.fillMaxWidth().height(rowH))
+                                        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            brakePedal(Modifier.weight(1f).fillMaxHeight())
+                                            if (!isAuto) clutchPedal(Modifier.width(50.dp).fillMaxHeight())
+                                        }
+                                    } else {
+                                        turnLeft(Modifier.fillMaxWidth().height(turnH))
+                                        horn(Modifier.fillMaxWidth().height(rowH))
+                                        lightsPair(Modifier.fillMaxWidth().height(rowH))
+                                        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            if (!isAuto) clutchPedal(Modifier.width(50.dp).fillMaxHeight())
+                                            brakePedal(Modifier.weight(1f).fillMaxHeight())
+                                        }
                                     }
                                 }
                             }
                             val centerCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     dash(Modifier.fillMaxWidth().weight(1f), false)
-                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         retarder(Modifier.weight(2f).fillMaxHeight())
                                         wipers(Modifier.weight(1f).fillMaxHeight())
                                         DTile("Camera", "cam", Modifier.weight(1f).fillMaxHeight(), slideOffCancel = slideOff,
@@ -379,10 +472,16 @@ fun DesignCockpitScreen(
                                 }
                             }
                             val rightCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.width(200.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    turnRight(Modifier.fillMaxWidth().height(60.dp))
-                                    shift(Modifier.fillMaxWidth().height(rowH))
-                                    cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                Column(Modifier.width(sideW).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (settings.ergonomicLayout) {
+                                        cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                        turnRight(Modifier.fillMaxWidth().height(turnH))
+                                        shift(Modifier.fillMaxWidth().height(rowH))
+                                    } else {
+                                        turnRight(Modifier.fillMaxWidth().height(turnH))
+                                        shift(Modifier.fillMaxWidth().height(rowH))
+                                        cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                    }
                                     gasPedal(Modifier.fillMaxWidth().weight(1f))
                                 }
                             }
@@ -390,8 +489,8 @@ fun DesignCockpitScreen(
                         }
                         SteerMode.PAD -> {
                             val leftCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.width(210.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    turnLeft(Modifier.fillMaxWidth().height(60.dp))
+                                Column(Modifier.width(sideW).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    turnLeft(Modifier.fillMaxWidth().height(turnH))
                                     PadWheel(padNorm, accent, Modifier.fillMaxWidth().weight(1f)) { n ->
                                         padNorm = n
                                         onTouchSteerChange(n)
@@ -400,27 +499,33 @@ fun DesignCockpitScreen(
                                 }
                             }
                             val centerCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     dash(Modifier.fillMaxWidth().weight(1f), true)
-                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        lights(Modifier.weight(1f).fillMaxHeight()); highBeam(Modifier.weight(1f).fillMaxHeight())
-                                        wipers(Modifier.weight(1f).fillMaxHeight())
-                                        DTile("Horn / Air", "horn", Modifier.weight(1f).fillMaxHeight(), tint = accent, borderTint = accent, onPressChanged = { onButtonStateChange(0, it) })
-                                    }
-                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        shift(Modifier.weight(3f).fillMaxHeight())
+                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        lights(Modifier.weight(1f).fillMaxHeight())
+                                        highBeam(Modifier.weight(1f).fillMaxHeight())
                                         retarder(Modifier.weight(2f).fillMaxHeight())
+                                    }
+                                    Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        shift(Modifier.weight(3f).fillMaxHeight())
+                                        wipers(Modifier.weight(1f).fillMaxHeight())
+                                        DTile("Horn", "horn", Modifier.weight(1f).fillMaxHeight(), tint = accent, borderTint = accent, onPressChanged = { onButtonStateChange(0, it) })
                                     }
                                     guardedRow(Modifier.fillMaxWidth().height(rowH))
                                 }
                             }
                             val rightCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.width(210.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    turnRight(Modifier.fillMaxWidth().height(60.dp))
-                                    cruiseRow(Modifier.fillMaxWidth().height(rowH))
-                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Column(Modifier.width(sideW).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (settings.ergonomicLayout) {
+                                        cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                        turnRight(Modifier.fillMaxWidth().height(turnH))
+                                    } else {
+                                        turnRight(Modifier.fillMaxWidth().height(turnH))
+                                        cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                    }
+                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         brakePedal(Modifier.weight(1f).fillMaxHeight())
-                                        gasPedal(Modifier.weight(1.35f).fillMaxHeight())
+                                        gasPedal(Modifier.weight(1.3f).fillMaxHeight())
                                     }
                                 }
                             }
@@ -428,42 +533,55 @@ fun DesignCockpitScreen(
                         }
                         SteerMode.SLIDE -> {
                             val main: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        Column(Modifier.width(190.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            turnLeft(Modifier.fillMaxWidth().height(52.dp))
-                                            Row(Modifier.fillMaxWidth().height(50.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                lights(Modifier.weight(1f).fillMaxHeight()); highBeam(Modifier.weight(1f).fillMaxHeight())
+                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Column(Modifier.width((sideW * 0.92f).coerceAtLeast(146.dp)).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            if (settings.ergonomicLayout) {
+                                                lightsPair(Modifier.fillMaxWidth().weight(1f))
+                                                turnLeft(Modifier.fillMaxWidth().weight(1f))
+                                                Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    DTile("Horn", "horn", Modifier.weight(1f).fillMaxHeight(), tint = accent, borderTint = accent, onPressChanged = { onButtonStateChange(0, it) })
+                                                    wipers(Modifier.weight(1f).fillMaxHeight())
+                                                }
+                                                shift(Modifier.fillMaxWidth().weight(1f))
+                                            } else {
+                                                turnLeft(Modifier.fillMaxWidth().weight(1f))
+                                                lightsPair(Modifier.fillMaxWidth().weight(1f))
+                                                Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    DTile("Horn", "horn", Modifier.weight(1f).fillMaxHeight(), tint = accent, borderTint = accent, onPressChanged = { onButtonStateChange(0, it) })
+                                                    wipers(Modifier.weight(1f).fillMaxHeight())
+                                                }
+                                                shift(Modifier.fillMaxWidth().weight(1f))
                                             }
-                                            Row(Modifier.fillMaxWidth().height(50.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                DTile("Horn", "horn", Modifier.weight(1f).fillMaxHeight(), tint = accent, borderTint = accent, onPressChanged = { onButtonStateChange(0, it) })
-                                                wipers(Modifier.weight(1f).fillMaxHeight())
-                                            }
-                                            shift(Modifier.fillMaxWidth().height(50.dp))
                                         }
-                                        Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            dash(Modifier.fillMaxWidth().weight(1f), true)
-                                            Row(Modifier.fillMaxWidth().height(52.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            dash(Modifier.fillMaxWidth().weight(1.7f), true)
+                                            Row(Modifier.fillMaxWidth().height(rowH), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                                 retarder(Modifier.weight(2f).fillMaxHeight())
                                                 DTile("Camera", "cam", Modifier.weight(1f).fillMaxHeight(), slideOffCancel = slideOff, onTap = { pulse(13) })
                                             }
-                                            guardedRow(Modifier.fillMaxWidth().height(52.dp))
+                                            guardedRow(Modifier.fillMaxWidth().height(rowH))
                                         }
                                     }
                                     SlideSteeringBar(
                                         accentColor = accent,
                                         onSteerChange = { s -> padNorm = s; onTouchSteerChange(s) },
-                                        modifier = Modifier.fillMaxWidth().height(74.dp)
+                                        modifier = Modifier.fillMaxWidth().height(slideH)
                                     )
                                 }
                             }
                             val rightCol: @Composable RowScope.() -> Unit = {
-                                Column(Modifier.width(210.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    turnRight(Modifier.fillMaxWidth().height(60.dp))
-                                    cruiseRow(Modifier.fillMaxWidth().height(rowH))
-                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Column(Modifier.width(sideW).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (settings.ergonomicLayout) {
+                                        cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                        turnRight(Modifier.fillMaxWidth().height(turnH))
+                                    } else {
+                                        turnRight(Modifier.fillMaxWidth().height(turnH))
+                                        cruiseRow(Modifier.fillMaxWidth().height(rowH))
+                                    }
+                                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         brakePedal(Modifier.weight(1f).fillMaxHeight())
-                                        gasPedal(Modifier.weight(1.35f).fillMaxHeight())
+                                        gasPedal(Modifier.weight(1.3f).fillMaxHeight())
                                     }
                                 }
                             }
@@ -480,9 +598,11 @@ fun DesignCockpitScreen(
                 brake = brake
             )
 
-            // Quick dock handle: tap it or swipe up from it
+            // Quick dock handle: sits completely inside bottomPad below guardedRow (zero overlap with Engine tile)
             Box(
-                modifier = Modifier.align(Alignment.BottomCenter).width(200.dp).height(22.dp)
+                modifier = Modifier.align(Alignment.BottomCenter).width(220.dp).height(dockHandleH)
+                    .padding(bottom = navBottom.coerceAtLeast(2.dp))
+                    .semantics { contentDescription = "Open quick dock" }
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             val d = awaitFirstDown(requireUnconsumed = false)
@@ -494,41 +614,60 @@ fun DesignCockpitScreen(
                                 if (!ch.pressed) break
                                 ch.consume()
                             }
-                            if (dyTotal < -24.dp.toPx() || abs(dyTotal) < 8.dp.toPx()) {
+                            if (dyTotal < -20.dp.toPx() || abs(dyTotal) < 10.dp.toPx()) {
                                 buzz(18L, 120)
                                 showDock = true
                             }
                         }
                     },
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.BottomCenter
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    DIcon("up", TextMuted.copy(alpha = 0.35f + 0.65f * blink.value), Modifier.size(10.dp), 2.4f)
+                Column(
+                    modifier = Modifier.padding(bottom = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    DIcon("up", TextMuted.copy(alpha = 0.55f + 0.45f * blink.value), Modifier.size(10.dp), 2.4f)
                     Box(Modifier.size(width = 56.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(CockpitBorderStrong))
                 }
             }
 
-            if (showMore) DMorePanel(onTrigger = { pulse(it) }, onDismiss = { showMore = false })
-            if (showDock) QuickDockOverlay(accent, t, onTrigger = { pulse(it) }, onDismiss = { showDock = false })
-            if (showData) DataOverlay(t, brakeTempC, settings.speedUnitMph, accent, onDismiss = { showData = false })
-            if (showTuning) DTuningScreen(
-                settings, onSave = onSaveSettings, onDismiss = { showTuning = false },
-                isConnected = isConnected, connectedIp = connectedIp, packetsPerSec = packetsPerSec,
-                savedManualIp = savedManualIp, onSetManualIp = onSetManualIp
-            )
-            if (showConn) DConnectDialog(isConnected, connectedIp, packetsPerSec, savedManualIp, onSetManualIp, accent) { showConn = false }
+            val overlayEnter = if (settings.reduceMotion) EnterTransition.None else fadeIn(tween(180)) + scaleIn(tween(180), initialScale = 0.97f)
+            val overlayExit = if (settings.reduceMotion) ExitTransition.None else fadeOut(tween(130)) + scaleOut(tween(130), targetScale = 0.98f)
+
+            AnimatedVisibility(visible = showMore, enter = overlayEnter, exit = overlayExit) {
+                DMorePanel(holdMs = holdMs, slideOffCancel = slideOff, onTrigger = { pulse(it) }, onDismiss = { showMore = false })
+            }
+            if (showDock) QuickDockOverlay(accent, t, holdMs = holdMs, slideOffCancel = slideOff, onTrigger = { pulse(it) }, onDismiss = { showDock = false })
+            AnimatedVisibility(visible = showData, enter = overlayEnter, exit = overlayExit) {
+                DataOverlay(t, brakeTempC, settings.speedUnitMph, accent, onDismiss = { showData = false })
+            }
+            AnimatedVisibility(visible = showTuning, enter = overlayEnter, exit = overlayExit) {
+                DTuningScreen(
+                    settings, onSave = onSaveSettings, onDismiss = { showTuning = false },
+                    isConnected = isConnected, connectedIp = connectedIp, packetsPerSec = packetsPerSec,
+                    savedManualIp = savedManualIp, onSetManualIp = onSetManualIp
+                )
+            }
+            AnimatedVisibility(visible = showConn, enter = overlayEnter, exit = overlayExit) {
+                DConnectDialog(isConnected, connectedIp, packetsPerSec, savedManualIp, onSetManualIp, accent) { showConn = false }
+            }
         }
     }
 }
 
 private class TileCtx(val holdMs: Long, val slideOff: Boolean)
 
-/** Relative horizontal drag: where the thumb lands is zero. Springs back to zero on release. */
-private fun Modifier.padDrag(scope: CoroutineScope, anim: Animatable<Float, AnimationVector1D>): Modifier =
+/** Relative horizontal drag: where the thumb lands is zero, reporting anchor fraction (-1..1). */
+private fun Modifier.padDrag(
+    scope: CoroutineScope,
+    anim: Animatable<Float, AnimationVector1D>,
+    onAnchor: (Offset?) -> Unit
+): Modifier =
     this.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             val x0 = down.position.x
+            onAnchor(down.position)
             val halfW = (size.width / 2f).coerceAtLeast(1f)
             while (true) {
                 val ev = awaitPointerEvent()
@@ -538,26 +677,29 @@ private fun Modifier.padDrag(scope: CoroutineScope, anim: Animatable<Float, Anim
                 scope.launch { anim.snapTo(n) }
                 ch.consume()
             }
+            onAnchor(null)
             scope.launch { anim.animateTo(0f, spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium)) }
         }
     }
 
 @Composable
-private fun DModeSwitch(mode: SteerMode, accent: Color, onChange: (SteerMode) -> Unit) {
+private fun DModeSwitch(mode: SteerMode, accent: Color, barHeight: Dp, compact: Boolean, onChange: (SteerMode) -> Unit) {
     Row(
-        modifier = Modifier.height(40.dp).clip(RoundedCornerShape(10.dp)).background(CockpitPanel)
+        modifier = Modifier.height(barHeight).clip(RoundedCornerShape(10.dp)).background(CockpitPanel)
             .border(1.dp, CockpitBorder, RoundedCornerShape(10.dp))
     ) {
         listOf(Triple(SteerMode.GYRO, "tilt", "GYRO"), Triple(SteerMode.PAD, "wheel", "PAD"), Triple(SteerMode.SLIDE, "slide", "SLIDE")).forEach { (m, ic, label) ->
             val on = mode == m
             Row(
                 modifier = Modifier.fillMaxHeight().background(if (on) accent else Color.Transparent)
-                    .clickable { onChange(m) }.padding(horizontal = 11.dp),
+                    .clickable { onChange(m) }.padding(horizontal = if (compact) 8.dp else 11.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                DIcon(ic, if (on) DarkBackground else TextBright, Modifier.size(16.dp), 2f)
-                Text(label, color = if (on) DarkBackground else TextBright, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                DIcon(ic, if (on) DarkBackground else TextBright, Modifier.size(15.dp), 2f)
+                if (!compact || on) {
+                    Text(label, color = if (on) DarkBackground else TextBright, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
     }
@@ -565,17 +707,34 @@ private fun DModeSwitch(mode: SteerMode, accent: Color, onChange: (SteerMode) ->
 
 @Composable
 private fun RetarderStepper(level: Int, modifier: Modifier, onDown: () -> Unit, onUp: () -> Unit) {
+    val accent = LocalAccent.current
     DCard(modifier) {
-        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.width(44.dp).fillMaxHeight().background(CockpitDeep).clickable { onDown() }, Alignment.Center) { DIcon("down", ScaniaAmber, Modifier.size(20.dp)) }
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                DPips(level)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    DIcon("pulse", TextMuted, Modifier.size(12.dp), 2f)
-                    Text("RETARDER", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp)
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val btnW = (maxWidth * 0.24f).coerceIn(34.dp, 48.dp)
+            val narrow = maxWidth < 170.dp
+            Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.width(btnW).fillMaxHeight().background(CockpitDeep)
+                        .semantics { contentDescription = "Decrease retarder" }.clickable { onDown() },
+                    Alignment.Center
+                ) { DIcon("down", accent, Modifier.size(18.dp)) }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    DPips(level, pipW = if (narrow) 7.dp else 10.dp)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        if (!narrow) DIcon("pulse", TextMuted, Modifier.size(11.dp), 2f)
+                        Text(
+                            if (narrow) "RET" else "RETARDER",
+                            color = TextMuted, fontSize = if (narrow) 8.5.sp else 9.sp,
+                            fontWeight = FontWeight.Medium, letterSpacing = 0.5.sp, maxLines = 1
+                        )
+                    }
                 }
+                Box(
+                    Modifier.width(btnW).fillMaxHeight().background(CockpitDeep)
+                        .semantics { contentDescription = "Increase retarder" }.clickable { onUp() },
+                    Alignment.Center
+                ) { DIcon("up", accent, Modifier.size(18.dp)) }
             }
-            Box(Modifier.width(44.dp).fillMaxHeight().background(CockpitDeep).clickable { onUp() }, Alignment.Center) { DIcon("up", ScaniaAmber, Modifier.size(20.dp)) }
         }
     }
 }
@@ -583,32 +742,36 @@ private fun RetarderStepper(level: Int, modifier: Modifier, onDown: () -> Unit, 
 /** Wipers: only the arm sweeps when active. Tap cycles, swipe down turns off. */
 @Composable
 private fun WipersTile(modifier: Modifier, active: Boolean, ctx: TileCtx, onTap: () -> Unit, onOff: () -> Unit) {
-    val tr = rememberInfiniteTransition(label = "wiper")
-    val sweep by tr.animateFloat(
-        -50f, 50f, infiniteRepeatable(tween(1100, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "wiperArm"
-    )
+    val reduceMotion = LocalReduceMotion.current
+    val sweep = if (active && !reduceMotion) {
+        val tr = rememberInfiniteTransition(label = "wiper")
+        tr.animateFloat(
+            -50f, 50f, infiniteRepeatable(tween(1100, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "wiperArm"
+        ).value
+    } else if (active) 20f else -50f
     DTile("Wipers", null, modifier, slideOffCancel = ctx.slideOff, onSwipeDown = onOff, onTap = onTap, iconSlot = {
         Canvas(Modifier.size(22.dp)) {
             val st = Stroke(width = 1.9.dp.toPx(), cap = StrokeCap.Round)
             drawArc(CockpitBorderStrong, 180f, 180f, false, topLeft = Offset(size.width * 0.05f, size.height * 0.15f),
                 size = androidx.compose.ui.geometry.Size(size.width * 0.9f, size.height * 1.6f), style = st)
-            rotate(if (active) sweep else -50f, pivot = Offset(size.width / 2f, size.height * 0.95f)) {
+            rotate(sweep, pivot = Offset(size.width / 2f, size.height * 0.95f)) {
                 drawLine(TextBright, Offset(size.width / 2f, size.height * 0.95f), Offset(size.width / 2f, size.height * 0.25f), 1.9.dp.toPx(), StrokeCap.Round)
             }
         }
     })
 }
 
-/** Circular thumb steering pad: slide anywhere, ticks every 15 degrees, springs back to zero. */
+/** Circular thumb steering pad: slide anywhere, shows touch anchor ring, springs back to zero. */
 @Composable
 private fun PadWheel(norm: Float, accent: Color, modifier: Modifier, onSteer: (Float) -> Unit) {
     val anim = remember { Animatable(0f) }
+    var anchor by remember { mutableStateOf<Offset?>(null) }
     val scope = rememberCoroutineScope()
     val cur by rememberUpdatedState(onSteer)
     LaunchedEffect(Unit) { snapshotFlow { anim.value }.collect { cur(slideCurve(it)) } }
     DCard(
-        modifier = modifier.padDrag(scope, anim),
-        borderColor = CockpitBorderStrong
+        modifier = modifier.padDrag(scope, anim) { anchor = it },
+        borderColor = if (anchor != null) accent else CockpitBorderStrong
     ) {
         val steer = slideCurve(anim.value)
         Canvas(Modifier.fillMaxSize().padding(10.dp)) {
@@ -638,6 +801,15 @@ private fun PadWheel(norm: Float, accent: Color, modifier: Modifier, onSteer: (F
                 drawCircle(TextMuted, r * 0.44f, c, style = Stroke(5.dp.toPx()))
                 drawCircle(accent, 4.dp.toPx(), Offset(c.x, c.y - r * 0.44f))
             }
+            anchor?.let { aPos ->
+                val padPx = 10.dp.toPx()
+                val localA = Offset(
+                    (aPos.x - padPx).coerceIn(0f, size.width),
+                    (aPos.y - padPx).coerceIn(0f, size.height)
+                )
+                drawCircle(TextBright.copy(alpha = 0.22f), 12.dp.toPx(), localA, style = Stroke(1.5.dp.toPx()))
+                drawCircle(TextBright.copy(alpha = 0.55f), 3.dp.toPx(), localA)
+            }
         }
         Text("%+d\u00B0".format((steer * 450f).roundToInt()), color = TextBright, fontSize = 22.sp,
             fontWeight = FontWeight.Black, modifier = Modifier.align(Alignment.Center))
@@ -651,55 +823,133 @@ private fun Dash(
     modifier: Modifier, compact: Boolean, banner: Banner?, limit: Int, speed: Int, speedUnit: String, gear: String,
     rpmRatio: Float, overspeed: Boolean, rpmText: String, shake: Boolean, speedColor: Color, showWheel: Boolean, angle: Float,
     centered: Boolean, drift: Boolean, recenterLabel: String, holdMs: Long, onCenter: () -> Unit,
-    air: Float, airWarn: Boolean, fuel: Int, adblue: Int, brakeTemp: Int
+    air: Float, airWarn: Boolean, fuel: Int, adblue: Int, brakeTemp: Int,
+    routeDistKm: Int = 0, routeTimeMin: Int = 0, speedUnitMph: Boolean = false,
+    onPeekChange: (Float) -> Unit = {}
 ) {
     val blink = LocalBlink.current
-    val tr = rememberInfiniteTransition(label = "shake")
-    val jitter by tr.animateFloat(-2f, 2f, infiniteRepeatable(tween(70), RepeatMode.Reverse), label = "shakeX")
+    val accent = LocalAccent.current
+    val reduceMotion = LocalReduceMotion.current
+    val scope = rememberCoroutineScope()
+    val curPeek by rememberUpdatedState(onPeekChange)
+    val peekAnim = remember { Animatable(0f) }
+
     var gearFlash by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(gear) { gearFlash = 0.8f; delay(220L); gearFlash = 0f }
+    var gearTrigger by remember { mutableStateOf(false) }
+    LaunchedEffect(gear) {
+        gearFlash = 0.8f
+        gearTrigger = true
+        delay(160L)
+        gearTrigger = false
+        delay(80L)
+        gearFlash = 0f
+    }
+    val gearPop by animateFloatAsState(
+        targetValue = if (gearTrigger && !reduceMotion) 1.15f else 1f,
+        animationSpec = spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium),
+        label = "gearPop"
+    )
     val speedShown by animateIntAsState(speed, tween(280), label = "speedAnim")
-    val signRot by tr.animateFloat(-8f, 8f, infiniteRepeatable(tween(250), RepeatMode.Reverse), label = "signShake")
+    val signRot = if (overspeed && !reduceMotion) {
+        val tr = rememberInfiniteTransition(label = "overspeedSign")
+        tr.animateFloat(-6f, 6f, infiniteRepeatable(tween(260), RepeatMode.Reverse), label = "signShake").value
+    } else 0f
+
+    val routeDist = if (speedUnitMph) (routeDistKm * 0.621371f).roundToInt() else routeDistKm
+    val routeUnit = if (speedUnitMph) "mi" else "km"
+    val etaStr = if (routeTimeMin > 0) "%d:%02d".format(routeTimeMin / 60, routeTimeMin % 60) else ""
 
     @Composable
-    fun readouts() {
-        val items = listOf(
-            Triple("air", "%.1f".format(air), airWarn), Triple("fuel", "$fuel%", fuel <= 15),
-            Triple("drop", "$adblue%", adblue <= 15), Triple("temp", "$brakeTemp\u00B0", brakeTemp > 350)
-        )
-        items.forEach { (ic, v, warn) ->
-            val col = if (warn) ScaniaAmber.copy(alpha = blink.value) else TextMuted
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                DIcon(ic, col, Modifier.size(if (compact) 11.dp else 13.dp), 2f)
-                Text(v, color = col, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-            }
+    fun readoutItem(ic: String, v: String, warn: Boolean) {
+        val col = if (warn) accent.copy(alpha = blink.value) else TextMuted
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            DIcon(ic, col, Modifier.size(if (compact) 12.dp else 13.dp), 2f)
+            Text(v, color = col, fontSize = if (compact) 10.sp else 11.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
     }
 
-    DCard(modifier) {
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 8.dp),
-            verticalArrangement = if (compact) Arrangement.SpaceEvenly else Arrangement.SpaceBetween
-        ) {
-            if (!compact || banner != null || limit > 0) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                if (banner != null) DChip(banner.text, banner.icon, banner.color, banner.pulse) else Spacer(Modifier.height(24.dp))
-                if (limit > 0) Box(
-                    Modifier.size(30.dp).graphicsLayer { rotationZ = if (overspeed) signRot else 0f }.clip(CircleShape).border(3.dp, BrakePedalRed, CircleShape), Alignment.Center
-                ) { Text("$limit", color = TextBright, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold) }
+    DCard(
+        modifier = modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val x0 = down.position.x
+                val halfW = 110.dp.toPx().coerceAtLeast(1f)
+                var dragging = false
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    val ch = ev.changes.firstOrNull { it.id == down.id }
+                    if (ch == null || !ch.pressed) break
+                    val dx = ch.position.x - x0
+                    if (abs(dx) > 12.dp.toPx()) dragging = true
+                    if (dragging) {
+                        val n = (dx / halfW).coerceIn(-1f, 1f)
+                        scope.launch { peekAnim.snapTo(n) }
+                        curPeek(n)
+                        ch.consume()
+                    }
+                }
+                if (dragging) {
+                    curPeek(0f)
+                    scope.launch { peekAnim.animateTo(0f, spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium)) }
+                }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                if (showWheel) DWheelCenter(angle, centered, drift, recenterLabel, holdMs, onCenter, Modifier.size(84.dp))
+        },
+        borderColor = when {
+            abs(peekAnim.value) > 0.08f -> VolvoIceBlue
+            shake -> BrakePedalRed.copy(alpha = 0.55f + 0.45f * blink.value)
+            else -> CockpitBorder
+        }
+    ) {
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 7.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            if (!compact || banner != null || limit > 0 || routeDistKm > 0) Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (banner != null) DChip(banner.text, banner.icon, banner.color, banner.pulse)
+                    else if (!compact) DChip("CAB", "eye", if (abs(peekAnim.value) > 0.08f) VolvoIceBlue else TextMuted, false)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (routeDistKm > 0) {
+                        Row(
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(CockpitDeep)
+                                .border(1.dp, CockpitBorder, RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            DIcon("route", accent, Modifier.size(11.dp), 2f)
+                            Text(
+                                if (etaStr.isNotEmpty()) "$routeDist $routeUnit \u00B7 $etaStr" else "$routeDist $routeUnit",
+                                color = TextBright, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1
+                            )
+                        }
+                    } else if (!compact) {
+                        Text("SWIPE TO PEEK", color = TextMuted.copy(alpha = 0.7f), fontSize = 9.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.5.sp)
+                    }
+                    if (limit > 0) Box(
+                        Modifier.size(28.dp).graphicsLayer { rotationZ = signRot }.clip(CircleShape).border(3.dp, BrakePedalRed, CircleShape), Alignment.Center
+                    ) { Text("$limit", color = TextBright, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold) }
+                }
+            }
+            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                if (showWheel) DWheelCenter(angle, centered, drift, recenterLabel, holdMs, onCenter, Modifier.size(76.dp))
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        "$speedShown", color = speedColor, fontSize = if (compact) 38.sp else 56.sp, fontWeight = FontWeight.Black,
-                        lineHeight = if (compact) 38.sp else 56.sp, modifier = Modifier.offset(x = if (shake) jitter.dp else 0.dp)
+                        "$speedShown", color = speedColor, fontSize = if (compact) 34.sp else 50.sp, fontWeight = FontWeight.Black,
+                        lineHeight = if (compact) 34.sp else 50.sp
                     )
-                    Text(speedUnit.uppercase(), color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp)
+                    Text(speedUnit.uppercase(), color = TextMuted, fontSize = 9.5.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp)
                 }
                 Box(
-                    Modifier.size(if (compact) 36.dp else 48.dp).clip(RoundedCornerShape(12.dp))
-                        .background(ScaniaAmber.copy(alpha = gearFlash))
-                        .border(2.dp, ScaniaAmber, RoundedCornerShape(12.dp)),
+                    Modifier.size(if (compact) 36.dp else 46.dp)
+                        .graphicsLayer { scaleX = gearPop; scaleY = gearPop }
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accent.copy(alpha = gearFlash))
+                        .border(2.dp, accent, RoundedCornerShape(12.dp)),
                     Alignment.Center
                 ) {
                     AnimatedContent(
@@ -707,10 +957,21 @@ private fun Dash(
                         transitionSpec = { (slideInVertically { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut()) },
                         label = "gearRoll"
                     ) { g ->
-                        Text(g, color = if (gearFlash > 0.4f) DarkBackground else ScaniaAmber, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.Black)
+                        Text(g, color = if (gearFlash > 0.4f) DarkBackground else accent, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.Black)
                     }
                 }
-                if (compact) Column(verticalArrangement = Arrangement.spacedBy(3.dp)) { readouts() }
+                if (compact) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.End) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            readoutItem("air", "%.1f".format(air), airWarn)
+                            readoutItem("fuel", "$fuel%", fuel <= 15)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            readoutItem("drop", "$adblue%", adblue <= 15)
+                            readoutItem("temp", "$brakeTemp\u00B0", brakeTemp > 350)
+                        }
+                    }
+                }
             }
             if (compact) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -718,14 +979,21 @@ private fun Dash(
                     DRpmBar(rpmRatio, Modifier.weight(1f))
                     Text(rpmText, color = speedColor, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold)
                 }
-            } else Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("RPM", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp)
-                    Text(rpmText, color = speedColor, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("RPM", color = TextMuted, fontSize = 9.5.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp)
+                        Text(rpmText, color = speedColor, fontSize = 9.5.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                    DRpmBar(rpmRatio, Modifier.fillMaxWidth())
+                    Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                        readoutItem("air", "%.1f".format(air), airWarn)
+                        readoutItem("fuel", "$fuel%", fuel <= 15)
+                        readoutItem("drop", "$adblue%", adblue <= 15)
+                        readoutItem("temp", "$brakeTemp\u00B0", brakeTemp > 350)
+                    }
                 }
-                DRpmBar(rpmRatio, Modifier.fillMaxWidth())
             }
-            if (!compact) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { readouts() }
         }
     }
 }

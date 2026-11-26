@@ -41,8 +41,8 @@ class OneEuroFilter(
     private var hasLastTime: Boolean = false
 
     fun updateParameters(mincutoff: Float, beta: Float) {
-        this.mincutoff = mincutoff.coerceIn(0.5f, 10.0f)
-        this.beta = beta.coerceIn(0.005f, 0.5f)
+        this.mincutoff = mincutoff.coerceIn(0.4f, 2.5f)
+        this.beta = beta.coerceIn(0.02f, 0.25f)
     }
 
     private fun computeAlpha(cutoff: Float): Float {

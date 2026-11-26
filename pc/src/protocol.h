@@ -4,11 +4,11 @@
 #include <cstddef>
 
 constexpr uint16_t PROTOCOL_MAGIC   = 0x4532; // "E2"
-constexpr uint8_t  PROTOCOL_VERSION = 2;
+constexpr uint8_t  PROTOCOL_VERSION = 3;
 
 constexpr uint16_t PORT_CONTROL     = 5005;
 constexpr uint16_t PORT_BEACON      = 5006;
-constexpr const char* BEACON_MSG    = "ETS2_COCKPIT_V2";
+constexpr const char* BEACON_MSG    = "ETS2_COCKPIT_V3";
 
 // Uplink flag bits (Phone -> PC)
 constexpr uint8_t UPLINK_FLAG_COACH_SMOOTH_MODE = (1 << 0);
@@ -39,7 +39,7 @@ constexpr uint8_t SAFETY_BLIND_SPOT_LEFT   = (1 << 1);
 constexpr uint8_t SAFETY_BLIND_SPOT_RIGHT  = (1 << 2);
 constexpr uint8_t SAFETY_COLLISION_WARN    = (1 << 3);
 constexpr uint8_t SAFETY_LKA_ACTIVE        = (1 << 4);
-constexpr uint8_t SAFETY_AUTO_TRANSMISSION = (1 << 5);
+constexpr uint8_t SAFETY_AUTO_TRANSMISSION = (1 << 5); // Populated via SCS_TELEMETRY_CONFIG_controls ("shifter.type")
 constexpr uint8_t SAFETY_PARK_LIGHTS       = (1 << 6);
 
 #pragma pack(push, 1)
@@ -61,10 +61,10 @@ struct PhoneControlPacket {
     uint8_t  checksum;          //        (1) -> XOR of bytes [0..27]
 };
 
-// 42-byte PC -> Phone Telemetry + Haptic Packet
+// 47-byte PC -> Phone Telemetry + Haptic Packet (v3)
 struct TruckTelemetryPacket {
     uint16_t magic;             // 0x4532 (2)
-    uint8_t  version;           // 2      (1)
+    uint8_t  version;           // 3      (1)
     uint8_t  safetyFlags;       //        (1)
     float    speedKmh;          //        (4)
     float    engineRpm;         //        (4)
@@ -87,13 +87,16 @@ struct TruckTelemetryPacket {
     uint16_t routeDistanceKm;   //        (2)
     uint16_t routeTimeMin;      //        (2)
     uint16_t echoTimestampMs;   //        (2)
-    uint8_t  checksum;          //        (1) -> XOR of bytes [0..40]
+    int16_t  oilTempC;          //        (2) -> Engine oil temp (°C)
+    int16_t  waterTempC;        //        (2) -> Coolant water temp (°C)
+    uint8_t  batteryVolts10;    //        (1) -> Battery voltage * 10
+    uint8_t  checksum;          //        (1) -> XOR of bytes [0..45]
 };
 
 #pragma pack(pop)
 
 static_assert(sizeof(PhoneControlPacket) == 29, "PhoneControlPacket must be 29 bytes");
-static_assert(sizeof(TruckTelemetryPacket) == 42, "TruckTelemetryPacket must be 42 bytes");
+static_assert(sizeof(TruckTelemetryPacket) == 47, "TruckTelemetryPacket must be 47 bytes");
 
 inline uint8_t computeXorChecksum(const uint8_t* data, size_t len) {
     uint8_t cs = 0;

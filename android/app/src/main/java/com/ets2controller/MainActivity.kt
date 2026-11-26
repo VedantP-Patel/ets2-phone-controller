@@ -19,17 +19,18 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.doOnLayout
+import com.ets2controller.audio.CockpitAudioSynthesizer
 import com.ets2controller.config.ControllerSettings
 import com.ets2controller.config.SettingsRepository
 import com.ets2controller.network.TruckTelemetryV2
 import com.ets2controller.network.UdpCockpitClient
 import com.ets2controller.sensor.SteeringManager
-import com.ets2controller.ui.ControllerScreen
 import com.ets2controller.ui.DesignCockpitScreen
 
 class MainActivity : ComponentActivity() {
     private lateinit var steeringManager: SteeringManager
     private lateinit var settingsRepo: SettingsRepository
+    private val audioSynth = CockpitAudioSynthesizer()
     private var udpClient: UdpCockpitClient? = null
     private var vibrator: Vibrator? = null
 
@@ -40,7 +41,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -66,6 +67,7 @@ class MainActivity : ComponentActivity() {
         settingsRepo = SettingsRepository(this)
         steeringManager = SteeringManager(this).apply {
             settings = settingsRepo.loadSettings()
+            audioSynth.isEnabled = settings.soundEffectsEnabled
             onMicroHapticFeedback = { triggerShortHaptic(18, 60) }
             onAutoCancelBlinker = { isLeft -> udpClient?.triggerPulse(if (isLeft) 4 else 5, 65L) }
         }
@@ -100,9 +102,20 @@ class MainActivity : ComponentActivity() {
 
                 DisposableEffect(Unit) {
                     liveSpeedSens = steeringManager.settings.speedSensitivity
+                    var prevGear = telemetry.gear
+                    var prevPark = telemetry.isParkBrake
+                    var hadFirstTelem = false
                     val client = UdpCockpitClient(
                         context = this@MainActivity,
                         onTelemetryUpdate = { telem ->
+                            if (hadFirstTelem) {
+                                if (telem.gear != prevGear) audioSynth.playShifterThunk()
+                                if (prevPark && !telem.isParkBrake) audioSynth.playAirBrakeHiss()
+                            }
+                            hadFirstTelem = true
+                            prevGear = telem.gear
+                            prevPark = telem.isParkBrake
+
                             telemetry = telem
                             steeringManager.currentSpeedKmh = telem.speedKmh
                             liveSpeedKmh = telem.speedKmh
@@ -123,9 +136,13 @@ class MainActivity : ComponentActivity() {
                         }
                     ).apply {
                         steeringProvider = {
-                            val raw = touchSteer ?: steeringManager.normalizedSteering
-                            val scale = 1f - liveSpeedSens * 0.5f * (liveSpeedKmh / 120f).coerceIn(0f, 1f)
-                            (raw * scale).coerceIn(-1f, 1f)
+                            val touch = touchSteer
+                            if (touch != null) {
+                                val scale = 1f - liveSpeedSens * 0.45f * (liveSpeedKmh / 120f).coerceIn(0f, 1f)
+                                (touch * scale).coerceIn(-1f, 1f)
+                            } else {
+                                steeringManager.normalizedSteering.coerceIn(-1f, 1f)
+                            }
                         }
                     }
                     udpClient = client
@@ -139,13 +156,30 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                LaunchedEffect(telemetry.isLeftBlinker, telemetry.isRightBlinker, telemetry.isHazard, settings.soundEffectsEnabled) {
+                    if ((telemetry.isLeftBlinker || telemetry.isRightBlinker || telemetry.isHazard) && settings.soundEffectsEnabled) {
+                        while (true) {
+                            audioSynth.playIndicatorTick()
+                            kotlinx.coroutines.delay(420L)
+                        }
+                    }
+                }
+
                 DesignCockpitScreen(
                     isConnected = isConnected,
                     connectedIp = connectedIp,
                     packetsPerSec = packetsPerSec,
-                    savedManualIp = udpClient?.getSavedIp() ?: "",
-                    onSetManualIp = { ip -> udpClient?.setManualHost(ip) },
+                    savedManualIp = udpClient?.getSavedIp()?.ifBlank { settings.serverIp } ?: settings.serverIp,
+                    onSetManualIp = { ip ->
+                        udpClient?.setManualHost(ip)
+                        val trimmed = ip.trim()
+                        if (settings.serverIp != trimmed) {
+                            settings = settings.copy(serverIp = trimmed)
+                            settingsRepo.saveSettings(settings)
+                        }
+                    },
                     rawAngleProvider = { steeringManager.rawAngleDeg },
+                    sensorModeLabel = steeringManager.sensorModeLabel,
                     throttle = throttle,
                     brake = brake,
                     clutch = clutch,
@@ -171,11 +205,15 @@ class MainActivity : ComponentActivity() {
                             udpClient?.setButtonHeld(bit, pressed)
                         }
                     },
-                    onPulseBit = { bit -> udpClient?.triggerPulse(bit, 65L) },
+                    onPulseBit = { bit ->
+                        if (bit == 23) audioSynth.playAirHornBlast()
+                        udpClient?.triggerPulse(bit, 65L)
+                    },
                     onCalibrateClick = { steeringManager.calibrateCenter() },
                     onSaveSettings = { updated: ControllerSettings ->
                         settings = updated
                         liveSpeedSens = updated.speedSensitivity
+                        audioSynth.isEnabled = updated.soundEffectsEnabled
                         settingsRepo.saveSettings(updated)
                         steeringManager.settings = updated
                     },

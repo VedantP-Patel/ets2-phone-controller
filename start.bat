@@ -7,7 +7,9 @@ set "ROOT_DIR=%~dp0"
 set "PC_DIR=%ROOT_DIR%pc"
 set "ANDROID_DIR=%ROOT_DIR%android"
 set "BUILT_DLL=%PC_DIR%\build\ets2_phone_plugin.dll"
-set "ETS2_BIN=D:\Games\Euro Truck Simulator 2\bin\win_x64"
+set "ETS2_BIN="
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$cands = @('D:\Games\Euro Truck Simulator 2\bin\win_x64','C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2\bin\win_x64','C:\Program Files\Steam\steamapps\common\Euro Truck Simulator 2\bin\win_x64'); $sp = (Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath; if (-not $sp) { $sp = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam' -ErrorAction SilentlyContinue).InstallPath }; if ($sp) { $cands += Join-Path $sp 'steamapps\common\Euro Truck Simulator 2\bin\win_x64'; $vdf = Join-Path $sp 'steamapps\libraryfolders.vdf'; if (Test-Path $vdf) { Select-String -Path $vdf -Pattern '\"path\"\s+\"([^\"]+)\"' | ForEach-Object { $lib = $_.Matches[0].Groups[1].Value -replace '\\\\','\'; $cands += Join-Path $lib 'steamapps\common\Euro Truck Simulator 2\bin\win_x64' } } }; $found = $cands | Where-Object { Test-Path (Join-Path $_ 'eurotrucks2.exe') } | Select-Object -First 1; if ($found) { Write-Output $found }"`) do set "ETS2_BIN=%%P"
+if not defined ETS2_BIN set "ETS2_BIN=D:\Games\Euro Truck Simulator 2\bin\win_x64"
 set "ETS2_EXE=%ETS2_BIN%\eurotrucks2.exe"
 set "PLUGINS_DIR=%ETS2_BIN%\plugins"
 set "TARGET_DLL=%PLUGINS_DIR%\ets2_phone_plugin.dll"
@@ -34,7 +36,7 @@ if exist "%BUILT_DLL%" (
 )
 
 if exist "%TARGET_DLL%" (
-    echo  [OK] Plugin DLL   : Ready in D:\Games\Euro Truck Simulator 2\bin\win_x64\plugins
+    echo  [OK] Plugin DLL   : Ready in %PLUGINS_DIR%
 ) else (
     echo  [!!] Plugin DLL   : Not built! Press [C] to compile and view errors.
 )
@@ -119,18 +121,18 @@ if defined VS_INST if exist "%VS_INST%\VC\Auxiliary\Build\vcvars64.bat" set "VCV
 if defined VCVARS (
     call "%VCVARS%" >nul 2>&1
     cl /nologo /O2 /W3 /EHsc /std:c++20 /DNDEBUG /LD /I"%PC_DIR%\src" /I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" /Fo"%PC_DIR%\build\ets2_phone_plugin.obj" /Fe:"%BUILT_DLL%" /link ws2_32.lib iphlpapi.lib /EXPORT:scs_input_init /EXPORT:scs_input_shutdown /EXPORT:scs_telemetry_init /EXPORT:scs_telemetry_shutdown
-    if errorlevel 1 exit /b 1
-    dumpbin /nologo /exports "%BUILT_DLL%" | findstr /C:"scs_input_init" >nul 2>&1
-    if errorlevel 1 (
+    if not errorlevel 1 (
+        dumpbin /nologo /exports "%BUILT_DLL%" | findstr /C:"scs_input_init" >nul 2>&1
+        if not errorlevel 1 exit /b 0
         echo  [ERROR] DLL compiled, but scs_input_init is NOT exported!
         exit /b 1
     )
-    exit /b 0
+    echo  [..] MSVC compile failed, falling back to g++...
 )
 
 where g++ >nul 2>&1
 if %errorlevel% equ 0 (
-    g++ -O2 -shared -std=c++20 -DNDEBUG -I"%PC_DIR%\src" -I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" -o "%BUILT_DLL%" -lws2_32 -liphlpapi
+    g++ -O2 -shared -static -static-libgcc -static-libstdc++ -std=c++20 -DNDEBUG -I"%PC_DIR%\src" -I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" -o "%BUILT_DLL%" -lws2_32 -liphlpapi
     exit /b %errorlevel%
 )
 

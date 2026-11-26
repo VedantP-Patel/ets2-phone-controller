@@ -14,10 +14,58 @@ import android.os.Process
 import com.ets2controller.config.ControllerSettings
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sign
 import kotlin.math.sqrt
+
+object SteeringMath {
+    /**
+     * Maps a filtered steering angle (degrees) to normalized [-1, 1] output using
+     * a single consolidated speed-sensitivity and deadzone model.
+     */
+    fun shapeAngle(
+        totalAngleDeg: Float,
+        halfLockDeg: Float,
+        speedKmh: Float,
+        settings: ControllerSettings,
+        coachSmoothMode: Boolean
+    ): Float {
+        val baseDz = settings.steeringDeadzoneDeg.coerceIn(0.0f, 10.0f)
+        val absSpeed = abs(speedKmh)
+        val effectiveDz = if (settings.speedSensitiveDeadzone) {
+            val speedRatio = (absSpeed / 60.0f).coerceIn(0.0f, 1.0f)
+            baseDz * (0.45f + 0.55f * speedRatio)
+        } else {
+            baseDz
+        }
+
+        val absAngle = abs(totalAngleDeg)
+        if (absAngle <= effectiveDz) return 0.0f
+
+        val rawNorm = ((absAngle - effectiveDz) / (halfLockDeg - effectiveDz).coerceAtLeast(1.0f)).coerceIn(0.0f, 1.0f)
+        val normalized = if (settings.centerSnapAssistance && absAngle < effectiveDz + 2.5f) {
+            val pocket = ((absAngle - effectiveDz) / 2.5f).coerceIn(0.0f, 1.0f)
+            rawNorm * (pocket * pocket * (3.0f - 2.0f * pocket))
+        } else {
+            rawNorm
+        }
+
+        val speedFactor = (absSpeed / 120.0f).coerceIn(0.0f, 1.0f)
+        val speedScale = 1.0f - settings.speedSensitivity.coerceIn(0.0f, 1.0f) * 0.45f * speedFactor
+
+        val shaped = if (settings.wheelMode1to1 || coachSmoothMode) {
+            val cubicWeight = if (coachSmoothMode) 0.30f else (0.15f + (absSpeed / 110.0f).coerceIn(0.0f, 0.15f))
+            (1.0f - cubicWeight) * normalized + cubicWeight * (normalized * normalized * normalized)
+        } else {
+            val curve = settings.steeringCurvePower.coerceIn(1.0f, 2.5f)
+            normalized.pow(curve)
+        }
+
+        return (sign(totalAngleDeg) * shaped * speedScale).coerceIn(-1.0f, 1.0f)
+    }
+}
 
 
 class SteeringManager(context: Context) : SensorEventListener {
@@ -31,9 +79,9 @@ class SteeringManager(context: Context) : SensorEventListener {
         gyroSensor != null && !gyroSensor.name.contains("Virtual", ignoreCase = true)
 
     private val rotationSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
-    private val accelOrGravitySensor: Sensor? =
-        sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            ?: sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+    private val gravitySensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+    private val accelSensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    private val hasDedicatedGravity: Boolean = gravitySensor != null
 
     private val rotMatrix = FloatArray(9)
     private val filteredGravity = FloatArray(3) { if (it == 0) 9.81f else 0f }
@@ -61,6 +109,8 @@ class SteeringManager(context: Context) : SensorEventListener {
     var rawAngleDeg by mutableFloatStateOf(0.0f)
         private set
 
+    val sensorModeLabel: String = if (hasHardwareGyro) "HW GYRO" else "ACCEL"
+
     @Volatile var currentSpeedKmh: Float = 0.0f
     @Volatile var isLeftBlinkerActive: Boolean = false
     @Volatile var isRightBlinkerActive: Boolean = false
@@ -73,13 +123,14 @@ class SteeringManager(context: Context) : SensorEventListener {
     private var leftBlinkerArmed = false
     private var rightBlinkerArmed = false
     private var lastHapticNotch = 0
+    private var lastAccelTimestampNs = 0L
 
     var settings: ControllerSettings = ControllerSettings()
         set(value) {
             field = value
             filter.updateParameters(
-                value.filterMinCutoff.coerceAtLeast(1.0f),
-                value.filterBeta.coerceAtLeast(0.03f)
+                value.filterMinCutoff.coerceIn(0.4f, 2.5f),
+                value.filterBeta.coerceIn(0.02f, 0.25f)
             )
         }
 
@@ -94,7 +145,8 @@ class SteeringManager(context: Context) : SensorEventListener {
             rotationSensor?.let { registerSafe(it, handler) }
             gyroSensor?.let { registerSafe(it, handler) }
         }
-        accelOrGravitySensor?.let { registerSafe(it, handler) }
+        gravitySensor?.let { registerSafe(it, handler) }
+        accelSensor?.let { registerSafe(it, handler) }
     }
 
     private fun registerSafe(sensor: Sensor, handler: Handler) {
@@ -146,15 +198,21 @@ class SteeringManager(context: Context) : SensorEventListener {
         if (event == null) return
 
         when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GRAVITY -> {
+            Sensor.TYPE_ACCELEROMETER -> {
                 val rawGx = event.values[0]
                 val rawGy = event.values[1]
                 val rawGz = event.values[2]
                 val totalMag = sqrt(rawGx * rawGx + rawGy * rawGy + rawGz * rawGz)
                 lastLinearAccelError = abs(totalMag - 9.81f)
 
-                if (!hasHardwareGyro || rotationSensor == null) {
+                if ((!hasHardwareGyro || rotationSensor == null) && !hasDedicatedGravity) {
                     updateGravityHorizon(rawGx, rawGy, rawGz, isEkfFused = false, timestampNs = event.timestamp)
+                }
+            }
+
+            Sensor.TYPE_GRAVITY -> {
+                if (!hasHardwareGyro || rotationSensor == null) {
+                    updateGravityHorizon(event.values[0], event.values[1], event.values[2], isEkfFused = true, timestampNs = event.timestamp)
                 }
             }
 
@@ -256,12 +314,17 @@ class SteeringManager(context: Context) : SensorEventListener {
             filteredGravity[1] = gyIn
             filteredGravity[2] = gzIn
         } else {
+            val dt = if (lastAccelTimestampNs > 0L) {
+                ((timestampNs - lastAccelTimestampNs) * 1e-9f).coerceIn(0.002f, 0.05f)
+            } else 0.015f
             val whipGate = (1.0f - (lastLinearAccelError / 3.5f)).coerceIn(0.05f, 1.0f)
-            val alpha = if (isHapticVibrating) 0.02f else (0.18f * whipGate)
+            val tau = if (isHapticVibrating) 0.45f else (0.045f / whipGate)
+            val alpha = (1.0f - exp((-dt / tau).toDouble()).toFloat()).coerceIn(0.01f, 0.45f)
             filteredGravity[0] += alpha * (gxIn - filteredGravity[0])
             filteredGravity[1] += alpha * (gyIn - filteredGravity[1])
             filteredGravity[2] += alpha * (gzIn - filteredGravity[2])
         }
+        lastAccelTimestampNs = timestampNs
 
         val gx = filteredGravity[0]
         val gy = filteredGravity[1]
@@ -308,30 +371,15 @@ class SteeringManager(context: Context) : SensorEventListener {
         val totalAngle = if (settings.invertSteering) -smoothedAngle else smoothedAngle
         rawAngleDeg = totalAngle
 
-        val deadzone = settings.steeringDeadzoneDeg.coerceIn(0.0f, 10.0f)
+        normalizedSteering = SteeringMath.shapeAngle(
+            totalAngleDeg = totalAngle,
+            halfLockDeg = halfLockDeg,
+            speedKmh = currentSpeedKmh,
+            settings = settings,
+            coachSmoothMode = coachSmoothMode
+        )
+
         val absAngle = abs(totalAngle)
-
-        val steerVal = if (absAngle <= deadzone) {
-            0.0f
-        } else {
-            val rawNorm = ((absAngle - deadzone) / (halfLockDeg - deadzone).coerceAtLeast(1.0f)).coerceIn(0.0f, 1.0f)
-            val normalized = if (settings.centerSnapAssistance && absAngle < deadzone + 2.5f) {
-                val pocket = ((absAngle - deadzone) / 2.5f).coerceIn(0.0f, 1.0f)
-                rawNorm * (pocket * pocket * (3.0f - 2.0f * pocket))
-            } else rawNorm
-
-            val shaped = if (settings.wheelMode1to1 || coachSmoothMode) {
-                val cubicWeight = if (coachSmoothMode) 0.30f else (0.15f + (currentSpeedKmh / 110.0f).coerceIn(0.0f, 0.15f))
-                (1.0f - cubicWeight) * normalized + cubicWeight * (normalized * normalized * normalized)
-            } else {
-                val speedFactor = (currentSpeedKmh / 90.0f).coerceIn(0.0f, 1.0f)
-                val curve = (settings.steeringCurvePower + 0.25f * speedFactor).coerceIn(1.0f, 2.5f)
-                normalized.pow(curve)
-            }
-            sign(totalAngle) * shaped
-        }
-
-        normalizedSteering = steerVal.coerceIn(-1.0f, 1.0f)
 
         if (settings.steeringHapticTension) {
             val currentNotch = (absAngle / 15.0f).toInt()
