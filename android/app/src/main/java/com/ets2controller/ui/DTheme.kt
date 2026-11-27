@@ -94,6 +94,11 @@ private val ICON_PATHS: Map<String, String> = mapOf(
     "wifi" to "M2 9a15 15 0 0 1 20 0M5 13a10 10 0 0 1 14 0M8.5 16.5a5 5 0 0 1 7 0M12 20h.01",
     "box" to "M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8",
     "coin" to "M12 3a9 9 0 1 0 .01 0M9 10h5M9 14h5M12 7v10",
+    "list" to "M4 7h16M4 12h16M4 17h10",
+    "volume" to "M3 10v4h4l5 4V6L7 10H3zM16 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11",
+    "star" to "M12 3l2.6 5.5 6 .9-4.3 4.2 1 6-5.3-2.8-5.3 2.8 1-6L3.4 9.4l6-.9z",
+    "play" to "M7 5l12 7-12 7z",
+    "dpad" to "M12 3l3 3h-6zM12 21l3-3h-6zM3 12l3-3v6zM21 12l-3-3v6z",
 )
 
 @androidx.compose.runtime.Composable

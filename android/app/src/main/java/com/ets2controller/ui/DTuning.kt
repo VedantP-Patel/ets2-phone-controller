@@ -1,5 +1,12 @@
 package com.ets2controller.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -91,37 +98,54 @@ fun DTuningScreen(
             }
             Box(Modifier.width(1.dp).fillMaxHeight().background(CockpitBorder))
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                Row(
-                    modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
-                    when (tab) {
-                        0 -> SteeringTab(s, accent) { s = it }
-                        1 -> ControlsTab(s, accent) { s = it }
-                        2 -> Column(
-                            Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Toggle("Haptic feedback", "Short ticks on button presses", s.hapticFeedbackEnabled, accent) { s = s.copy(hapticFeedbackEnabled = it) }
-                            Toggle("Force feedback rumble", "Vibrates on rumble strips, curbs, and collisions", s.forceFeedbackEnabled, accent) { s = s.copy(forceFeedbackEnabled = it) }
-                            Toggle("Cockpit audio", "Relay tick, air hiss, shifter thunks, and air horn", s.soundEffectsEnabled, accent) { s = s.copy(soundEffectsEnabled = it) }
-                            Toggle("Steering detents", "A notch every 15 degrees of steering", s.steeringHapticTension, accent) { s = s.copy(steeringHapticTension = it) }
+                val reduceMotion = LocalReduceMotion.current
+                AnimatedContent(
+                    targetState = tab,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    transitionSpec = {
+                        if (reduceMotion) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            fadeIn(tween(170)) togetherWith fadeOut(tween(120))
                         }
-                        3 -> Column(
-                            Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Label("SPEED UNIT")
-                            Seg(listOf("km/h", "mph"), if (s.speedUnitMph) 1 else 0, accent) { s = s.copy(speedUnitMph = it == 1) }
-                            Label("COCKPIT THEME")
-                            val themes = listOf("SCANIA_AMBER", "VOLVO_CYAN", "MERCEDES_GREEN", "DAF_WHITE")
-                            Seg(listOf("Scania", "Volvo", "Mercedes", "DAF"), themes.indexOf(s.clusterTheme).coerceAtLeast(0), accent) { s = s.copy(clusterTheme = themes[it]) }
-                            Toggle("Auto-cancel turn signals", "Cancels when the wheel straightens", s.autoCancelBlinkers, accent) { s = s.copy(autoCancelBlinkers = it) }
-                        }
-                        else -> Column(
-                            Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 12.dp)
-                        ) {
-                            DConnectionContent(isConnected, connectedIp, packetsPerSec, savedManualIp, onSetManualIp, accent, onDone = {})
+                    },
+                    label = "tuningTabTransition"
+                ) { activeTab ->
+                    Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp)
+                    ) {
+                        when (activeTab) {
+                            0 -> SteeringTab(s, accent) { s = it }
+                            1 -> ControlsTab(s, accent) { s = it }
+                            2 -> Column(
+                                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Toggle("Haptic feedback", "Short ticks on button presses", s.hapticFeedbackEnabled, accent) { s = s.copy(hapticFeedbackEnabled = it) }
+                                Toggle("Force feedback rumble", "Vibrates on rumble strips, curbs, and collisions", s.forceFeedbackEnabled, accent) { s = s.copy(forceFeedbackEnabled = it) }
+                                Toggle("Cockpit audio", "Relay tick, air hiss, shifter thunks, and air horn", s.soundEffectsEnabled, accent) { s = s.copy(soundEffectsEnabled = it) }
+                                Toggle("Steering detents", "A notch every 15 degrees of steering", s.steeringHapticTension, accent) { s = s.copy(steeringHapticTension = it) }
+                            }
+                            3 -> Column(
+                                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Label("SPEED UNIT")
+                                Seg(listOf("km/h", "mph"), if (s.speedUnitMph) 1 else 0, accent) { s = s.copy(speedUnitMph = it == 1) }
+                                Label("COCKPIT THEME")
+                                val themes = listOf("SCANIA_AMBER", "VOLVO_CYAN", "MERCEDES_GREEN", "DAF_WHITE")
+                                Seg(listOf("Scania", "Volvo", "Mercedes", "DAF"), themes.indexOf(s.clusterTheme).coerceAtLeast(0), accent) { s = s.copy(clusterTheme = themes[it]) }
+                                Label("SCREEN ORIENTATION")
+                                val orientModes = listOf("LANDSCAPE", "REVERSE", "SENSOR")
+                                Seg(listOf("Lock L", "Lock R", "Auto"), orientModes.indexOf(s.orientationMode).coerceAtLeast(0), accent) { s = s.copy(orientationMode = orientModes[it]) }
+                                Toggle("Auto-cancel turn signals", "Cancels when the wheel straightens", s.autoCancelBlinkers, accent) { s = s.copy(autoCancelBlinkers = it) }
+                            }
+                            else -> Column(
+                                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = 12.dp)
+                            ) {
+                                DConnectionContent(isConnected, connectedIp, packetsPerSec, savedManualIp, onSetManualIp, accent, onDone = {})
+                            }
                         }
                     }
                 }

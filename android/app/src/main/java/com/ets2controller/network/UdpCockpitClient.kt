@@ -15,7 +15,9 @@ import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
@@ -77,13 +79,43 @@ data class DecodedTelemetryFrame(
     val rumbleSmall: Int
 )
 
+data class RadioStation(
+    val index: Int,
+    val name: String,
+    val genre: String,
+    val country: String,
+    val bitrate: Int,
+    val isFavorite: Boolean,
+    val url: String
+)
+
+object UiNavCommand {
+    const val NONE: Byte = 0
+    const val UP: Byte = 1
+    const val DOWN: Byte = 2
+    const val LEFT: Byte = 3
+    const val RIGHT: Byte = 4
+    const val TAB: Byte = 5
+    const val ENTER: Byte = 6
+    const val ESC: Byte = 7
+    const val DELIVERY_OPT_1: Byte = 8
+    const val DELIVERY_OPT_2: Byte = 9
+    const val DELIVERY_OPT_3: Byte = 10
+    const val DELIVERY_CONFIRM: Byte = 11
+    const val RADIO_LIST_REQ: Byte = 12
+}
+
 object CockpitProtocol {
     const val MAGIC: Short = 0x4532
+    const val MAGIC_UI_CMD: Short = 0x4533
+    const val MAGIC_RADIO_ROW: Short = 0x4534
     const val VERSION: Byte = 3
     const val PORT_CONTROL = 5005
     const val PORT_BEACON = 5006
     const val UPLINK_SIZE = 29
     const val DOWNLINK_SIZE = 47
+    const val UI_CMD_SIZE = 5
+    const val RADIO_HEADER_SIZE = 11
 
     fun computeXor(buf: ByteArray, dataLen: Int): Byte {
         var cs = 0
@@ -178,13 +210,51 @@ object CockpitProtocol {
             rumbleSmall = rSmall
         )
     }
+
+    fun packUiCommand(cmd: Byte, arg: Byte = 0): ByteArray {
+        val out = ByteArray(UI_CMD_SIZE)
+        val bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        bb.putShort(MAGIC_UI_CMD)
+        bb.put(cmd)
+        bb.put(arg)
+        out[4] = computeXor(out, 4)
+        return out
+    }
+
+    fun decodeRadioRow(buf: ByteArray, len: Int): Pair<Int, RadioStation>? {
+        if (len < RADIO_HEADER_SIZE + 1 || buf.size < len) return null
+        val bb = ByteBuffer.wrap(buf, 0, RADIO_HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        val magic = bb.short
+        if (magic != MAGIC_RADIO_ROW) return null
+        val index = bb.short.toInt() and 0xFFFF
+        val total = bb.short.toInt() and 0xFFFF
+        val flags = bb.get().toInt() and 0xFF
+        val bitrate = bb.short.toInt() and 0xFFFF
+        val payloadLen = bb.short.toInt() and 0xFFFF
+        val expectedLen = RADIO_HEADER_SIZE + payloadLen + 1
+        if (len != expectedLen || payloadLen > 512 || !verifyXor(buf, expectedLen)) return null
+
+        val raw = String(buf, RADIO_HEADER_SIZE, payloadLen, Charsets.UTF_8)
+        val parts = raw.split('\t', limit = 4)
+        if (parts.size < 4) return null
+        return total to RadioStation(
+            index = index,
+            name = parts[0],
+            genre = parts[1],
+            country = parts[2],
+            bitrate = bitrate,
+            isFavorite = (flags and 1) != 0,
+            url = parts[3]
+        )
+    }
 }
 
 class UdpCockpitClient(
     context: Context,
     private val onTelemetryUpdate: (TruckTelemetryV2) -> Unit,
     private val onHapticPulse: (large: Int, small: Int) -> Unit,
-    private val onConnectionState: (connected: Boolean, hostIp: String, pps: Int) -> Unit
+    private val onConnectionState: (connected: Boolean, hostIp: String, pps: Int) -> Unit,
+    private val onRadioStations: (List<RadioStation>) -> Unit = {}
 ) {
     companion object {
         const val MAGIC: Short = CockpitProtocol.MAGIC
@@ -205,6 +275,10 @@ class UdpCockpitClient(
 
     private val heldButtons = AtomicLong(0L)
     private val pulseExpiryMap = ConcurrentHashMap<Int, Long>()
+    private val pendingUiCmds = ConcurrentLinkedQueue<ByteArray>()
+    private val radioMap = ConcurrentHashMap<Int, RadioStation>()
+    private val radioTotal = AtomicInteger(0)
+    @Volatile private var lastRadioNotifyMs = 0L
 
     @Volatile var steeringProvider: () -> Float = { 0f }
     @Volatile var throttle: Float = 0f
@@ -274,9 +348,29 @@ class UdpCockpitClient(
     }
 
     fun triggerPulse(bitIndex: Int, durationMs: Long = 150L) {
-    if (bitIndex !in 0..63) return
-    pulseExpiryMap[bitIndex] = SystemClock.elapsedRealtime() + durationMs
-}
+        if (bitIndex !in 0..63) return
+        pulseExpiryMap[bitIndex] = SystemClock.elapsedRealtime() + durationMs
+    }
+
+    fun sendUiCommand(cmd: Byte, arg: Byte = 0) {
+        pendingUiCmds.offer(CockpitProtocol.packUiCommand(cmd, arg))
+    }
+
+    fun requestRadioList() {
+        radioMap.clear()
+        radioTotal.set(0)
+        sendUiCommand(UiNavCommand.RADIO_LIST_REQ)
+    }
+
+    private fun handleRadioRow(total: Int, station: RadioStation) {
+        radioTotal.set(total)
+        radioMap[station.index] = station
+        val now = SystemClock.elapsedRealtime()
+        if (radioMap.size >= total || (now - lastRadioNotifyMs) > 180L) {
+            lastRadioNotifyMs = now
+            onRadioStations(radioMap.values.sortedBy { it.index })
+        }
+    }
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -328,22 +422,30 @@ class UdpCockpitClient(
         }, "CockpitBeaconThread").apply { start() }
 
         rxThread = Thread({
-            val buf = ByteArray(128)
+            val buf = ByteArray(1024)
             val pkt = DatagramPacket(buf, buf.size)
 
             while (running.get()) {
                 try {
                     socket.receive(pkt)
-                    val decoded = CockpitProtocol.decodeTelemetryPacket(buf, pkt.length, SystemClock.elapsedRealtime())
-                    if (decoded != null) {
-                        lastTelemetryRxMs.set(SystemClock.elapsedRealtime())
-                        val prev = targetHost.getAndSet(pkt.address)
-                        if (prev?.hostAddress != pkt.address.hostAddress) {
-                            pkt.address.hostAddress?.let {
-                                prefs.edit().putString("last_pc_ip", it).apply()
+                    if (pkt.length < 2) continue
+                    val magic = ((buf[0].toInt() and 0xFF) or ((buf[1].toInt() and 0xFF) shl 8)).toShort()
+                    if (magic == CockpitProtocol.MAGIC) {
+                        val decoded = CockpitProtocol.decodeTelemetryPacket(buf, pkt.length, SystemClock.elapsedRealtime())
+                        if (decoded != null) {
+                            lastTelemetryRxMs.set(SystemClock.elapsedRealtime())
+                            val prev = targetHost.getAndSet(pkt.address)
+                            if (prev?.hostAddress != pkt.address.hostAddress) {
+                                pkt.address.hostAddress?.let {
+                                    prefs.edit().putString("last_pc_ip", it).apply()
+                                }
                             }
+                            dispatchDecodedFrame(decoded)
                         }
-                        dispatchDecodedFrame(decoded)
+                    } else if (magic == CockpitProtocol.MAGIC_RADIO_ROW) {
+                        CockpitProtocol.decodeRadioRow(buf, pkt.length)?.let { (total, st) ->
+                            handleRadioRow(total, st)
+                        }
                     }
                 } catch (_: SocketTimeoutException) {
                 } catch (_: Exception) {}
@@ -351,7 +453,7 @@ class UdpCockpitClient(
         }, "CockpitRxThread").apply { start() }
 
         tcpRxThread = Thread({
-            val streamBuf = ByteArray(256)
+            val streamBuf = ByteArray(2048)
             var streamLen = 0
             while (running.get()) {
                 val tcp = activeTcpSocket.get()
@@ -370,15 +472,35 @@ class UdpCockpitClient(
                     }
                     streamLen += r
                     var cursor = 0
-                    while (cursor + CockpitProtocol.DOWNLINK_SIZE <= streamLen) {
-                        val slice = streamBuf.copyOfRange(cursor, cursor + CockpitProtocol.DOWNLINK_SIZE)
-                        val decoded = CockpitProtocol.decodeTelemetryPacket(
-                            slice, CockpitProtocol.DOWNLINK_SIZE, SystemClock.elapsedRealtime()
-                        )
-                        if (decoded != null) {
-                            lastTelemetryRxMs.set(SystemClock.elapsedRealtime())
-                            dispatchDecodedFrame(decoded)
-                            cursor += CockpitProtocol.DOWNLINK_SIZE
+                    while (cursor + 2 <= streamLen) {
+                        val magic = ((streamBuf[cursor].toInt() and 0xFF) or ((streamBuf[cursor + 1].toInt() and 0xFF) shl 8)).toShort()
+                        if (magic == CockpitProtocol.MAGIC) {
+                            if (cursor + CockpitProtocol.DOWNLINK_SIZE > streamLen) break
+                            val slice = streamBuf.copyOfRange(cursor, cursor + CockpitProtocol.DOWNLINK_SIZE)
+                            val decoded = CockpitProtocol.decodeTelemetryPacket(
+                                slice, CockpitProtocol.DOWNLINK_SIZE, SystemClock.elapsedRealtime()
+                            )
+                            if (decoded != null) {
+                                lastTelemetryRxMs.set(SystemClock.elapsedRealtime())
+                                dispatchDecodedFrame(decoded)
+                                cursor += CockpitProtocol.DOWNLINK_SIZE
+                            } else {
+                                cursor++
+                            }
+                        } else if (magic == CockpitProtocol.MAGIC_RADIO_ROW) {
+                            if (cursor + CockpitProtocol.RADIO_HEADER_SIZE > streamLen) break
+                            val plen = (streamBuf[cursor + 9].toInt() and 0xFF) or ((streamBuf[cursor + 10].toInt() and 0xFF) shl 8)
+                            if (plen > 512) { cursor++; continue }
+                            val expected = CockpitProtocol.RADIO_HEADER_SIZE + plen + 1
+                            if (cursor + expected > streamLen) break
+                            val slice = streamBuf.copyOfRange(cursor, cursor + expected)
+                            val row = CockpitProtocol.decodeRadioRow(slice, expected)
+                            if (row != null) {
+                                handleRadioRow(row.first, row.second)
+                                cursor += expected
+                            } else {
+                                cursor++
+                            }
                         } else {
                             cursor++
                         }
@@ -461,8 +583,13 @@ class UdpCockpitClient(
                     }
                     if (tcp != null && !tcp.isClosed) {
                         try {
-                            tcp.getOutputStream().write(txArray, 0, CockpitProtocol.UPLINK_SIZE)
-                            tcp.getOutputStream().flush()
+                            val outStream = tcp.getOutputStream()
+                            outStream.write(txArray, 0, CockpitProtocol.UPLINK_SIZE)
+                            while (true) {
+                                val cmdBytes = pendingUiCmds.poll() ?: break
+                                outStream.write(cmdBytes, 0, cmdBytes.size)
+                            }
+                            outStream.flush()
                             ppsCounter++
                         } catch (_: Exception) {
                             closeTcpSocket(tcp)
@@ -475,6 +602,10 @@ class UdpCockpitClient(
                             pkt.address = host
                             pkt.port = PORT_CONTROL
                             socket.send(pkt)
+                            while (true) {
+                                val cmdBytes = pendingUiCmds.poll() ?: break
+                                socket.send(DatagramPacket(cmdBytes, cmdBytes.size, host, PORT_CONTROL))
+                            }
                             ppsCounter++
                         } catch (_: Exception) {}
                     }

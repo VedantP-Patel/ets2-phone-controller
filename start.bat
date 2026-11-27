@@ -54,7 +54,7 @@ if %errorlevel% equ 0 (
 :: 3. Check & Auto-Bind ETS2 Profile Controls
 set "BIND_STATUS=Press [A] to Auto-Bind Profile"
 if not exist "%PC_DIR%\scripts\auto_bind_ets2.ps1" goto AFTER_BIND_CHECK
-findstr /S /C:"photo_mode" "%USERPROFILE%\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" >nul 2>&1
+findstr /S /C:"radio_play_pause" "%USERPROFILE%\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" >nul 2>&1
 if %errorlevel% neq 0 goto TRY_AUTO_BIND
 findstr /S /C:"coach_display" "%USERPROFILE%\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\profiles\*.sii" "%USERPROFILE%\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" "%USERPROFILE%\OneDrive\Documents\Euro Truck Simulator 2\steam_profiles\*.sii" >nul 2>&1
 if %errorlevel% neq 0 goto TRY_AUTO_BIND
@@ -125,7 +125,7 @@ if defined VS_INST if exist "%VS_INST%\VC\Auxiliary\Build\vcvars64.bat" set "VCV
 
 if defined VCVARS (
     call "%VCVARS%" >nul 2>&1
-    cl /nologo /O2 /W3 /EHsc /std:c++20 /DNDEBUG /LD /I"%PC_DIR%\src" /I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" /Fo"%PC_DIR%\build\ets2_phone_plugin.obj" /Fe:"%BUILT_DLL%" /link ws2_32.lib iphlpapi.lib /EXPORT:scs_input_init /EXPORT:scs_input_shutdown /EXPORT:scs_telemetry_init /EXPORT:scs_telemetry_shutdown
+    cl /nologo /O2 /W3 /EHsc /std:c++20 /DNDEBUG /LD /I"%PC_DIR%\src" /I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" /Fo"%PC_DIR%\build\ets2_phone_plugin.obj" /Fe:"%BUILT_DLL%" /link ws2_32.lib iphlpapi.lib user32.lib /EXPORT:scs_input_init /EXPORT:scs_input_shutdown /EXPORT:scs_telemetry_init /EXPORT:scs_telemetry_shutdown
     if not errorlevel 1 (
         dumpbin /nologo /exports "%BUILT_DLL%" | findstr /C:"scs_input_init" >nul 2>&1
         if not errorlevel 1 exit /b 0
@@ -137,7 +137,7 @@ if defined VCVARS (
 
 where g++ >nul 2>&1
 if %errorlevel% equ 0 (
-    g++ -O2 -shared -static -static-libgcc -static-libstdc++ -std=c++20 -DNDEBUG -I"%PC_DIR%\src" -I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" -o "%BUILT_DLL%" -lws2_32 -liphlpapi
+    g++ -O2 -shared -static -static-libgcc -static-libstdc++ -std=c++20 -DNDEBUG -I"%PC_DIR%\src" -I"%PC_DIR%\include\scssdk" "%PC_DIR%\src\ets2_phone_plugin.cpp" -o "%BUILT_DLL%" -lws2_32 -liphlpapi -luser32
     exit /b %errorlevel%
 )
 

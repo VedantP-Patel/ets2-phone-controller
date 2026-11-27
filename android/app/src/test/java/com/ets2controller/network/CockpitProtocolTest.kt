@@ -87,4 +87,41 @@ class CockpitProtocolTest {
         buf[10] = (buf[10].toInt() xor 0xFF).toByte()
         assertNull(CockpitProtocol.decodeTelemetryPacket(buf, CockpitProtocol.DOWNLINK_SIZE, 65542L))
     }
+
+    @Test
+    fun packUiCommandAndDecodeRadioRowValidateChecksums() {
+        val cmdPkt = CockpitProtocol.packUiCommand(UiNavCommand.DELIVERY_OPT_1, 3)
+        assertEquals(CockpitProtocol.UI_CMD_SIZE, cmdPkt.size)
+        assertTrue(CockpitProtocol.verifyXor(cmdPkt, cmdPkt.size))
+        val cmdBb = ByteBuffer.wrap(cmdPkt).order(ByteOrder.LITTLE_ENDIAN)
+        assertEquals(CockpitProtocol.MAGIC_UI_CMD, cmdBb.short)
+        assertEquals(UiNavCommand.DELIVERY_OPT_1, cmdBb.get())
+        assertEquals(3.toByte(), cmdBb.get())
+
+        val payload = "TruckersFM\tSim radio\tEN\thttps://radio.truckers.fm/".toByteArray(Charsets.UTF_8)
+        val radioBuf = ByteArray(CockpitProtocol.RADIO_HEADER_SIZE + payload.size + 1)
+        val rbb = ByteBuffer.wrap(radioBuf).order(ByteOrder.LITTLE_ENDIAN)
+        rbb.putShort(CockpitProtocol.MAGIC_RADIO_ROW)
+        rbb.putShort(0) // index
+        rbb.putShort(329) // totalCount
+        rbb.put(1) // fav
+        rbb.putShort(320) // bitrate
+        rbb.putShort(payload.size.toShort())
+        System.arraycopy(payload, 0, radioBuf, CockpitProtocol.RADIO_HEADER_SIZE, payload.size)
+        radioBuf[radioBuf.size - 1] = CockpitProtocol.computeXor(radioBuf, radioBuf.size - 1)
+
+        val decoded = CockpitProtocol.decodeRadioRow(radioBuf, radioBuf.size)
+        assertNotNull(decoded)
+        assertEquals(329, decoded!!.first)
+        assertEquals("TruckersFM", decoded.second.name)
+        assertEquals("Sim radio", decoded.second.genre)
+        assertEquals("EN", decoded.second.country)
+        assertEquals(320, decoded.second.bitrate)
+        assertTrue(decoded.second.isFavorite)
+        assertEquals("https://radio.truckers.fm/", decoded.second.url)
+
+        // Corrupt a payload byte -> must reject
+        radioBuf[CockpitProtocol.RADIO_HEADER_SIZE] = (radioBuf[CockpitProtocol.RADIO_HEADER_SIZE].toInt() xor 0xFF).toByte()
+        assertNull(CockpitProtocol.decodeRadioRow(radioBuf, radioBuf.size))
+    }
 }

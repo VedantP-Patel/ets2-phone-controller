@@ -16,7 +16,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -30,12 +32,13 @@
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "user32.lib")
 #endif
 
 namespace {
 
 constexpr size_t NUM_ANALOG_AXES     = 6;
-constexpr size_t NUM_BUTTON_CHANS    = 60;
+constexpr size_t NUM_BUTTON_CHANS    = 64;
 constexpr size_t TOTAL_INPUT_CHANS   = NUM_ANALOG_AXES + NUM_BUTTON_CHANS;
 constexpr size_t MAX_MONITORED_WHEELS = 8;
 
@@ -160,7 +163,11 @@ constexpr ChannelSpec kChannels[TOTAL_INPUT_CHANS] = {
     {"shift_drive",       "Phone Shift to Drive",             SCS_VALUE_TYPE_bool},
     {"shift_reverse",     "Phone Shift to Reverse",           SCS_VALUE_TYPE_bool},
     {"coach_light",       "Phone Coach Cabin Lighting",       SCS_VALUE_TYPE_bool},
-    {"coach_display",     "Phone Coach Infotainment Mode",    SCS_VALUE_TYPE_bool}
+    {"coach_display",     "Phone Coach Infotainment Mode",    SCS_VALUE_TYPE_bool},
+    {"radio_play_pause",  "Phone Radio Play Pause",           SCS_VALUE_TYPE_bool},
+    {"radio_vol_up",      "Phone Radio Volume Up",            SCS_VALUE_TYPE_bool},
+    {"radio_vol_down",    "Phone Radio Volume Down",          SCS_VALUE_TYPE_bool},
+    {"radio_fav",         "Phone Radio Favorite",             SCS_VALUE_TYPE_bool}
 };
 
 float    g_lastReportedAxes[NUM_ANALOG_AXES]{};
@@ -253,6 +260,209 @@ void applyControlPacket(const PhoneControlPacket& pkt, uint64_t mergedMask, uint
     g_ctrl.lastClientTs.store(pkt.clientTimestampMs, std::memory_order_relaxed);
 }
 
+struct RadioStationEntry {
+    std::string payload; // "name\tgenre\tcountry\turl"
+    uint16_t    bitrate = 128;
+    uint8_t     flags   = 0;
+};
+
+std::mutex                     g_radioMtx;
+std::vector<RadioStationEntry> g_radioStations;
+std::atomic<bool>              g_radioSyncRequested{false};
+
+std::string decodeSiiEscapes(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '\\' && i + 3 < raw.size() && raw[i + 1] == 'x') {
+            auto hexVal = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+                if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+                return -1;
+            };
+            int hi = hexVal(raw[i + 2]);
+            int lo = hexVal(raw[i + 3]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 3;
+                continue;
+            }
+        }
+        out.push_back(raw[i]);
+    }
+    return out;
+}
+
+void loadRadioStations() {
+    std::vector<std::wstring> candidates;
+    wchar_t buf[MAX_PATH];
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH) > 0) {
+        std::wstring up(buf);
+        candidates.push_back(up + L"\\OneDrive\\Documents\\Euro Truck Simulator 2\\live_streams.sii");
+        candidates.push_back(up + L"\\Documents\\Euro Truck Simulator 2\\live_streams.sii");
+    }
+    if (GetEnvironmentVariableW(L"OneDrive", buf, MAX_PATH) > 0) {
+        candidates.push_back(std::wstring(buf) + L"\\Documents\\Euro Truck Simulator 2\\live_streams.sii");
+    }
+
+    std::ifstream file;
+    for (const auto& path : candidates) {
+        std::string narrow(path.begin(), path.end());
+        file.open(narrow, std::ios::in);
+        if (file.is_open()) break;
+        file.clear();
+    }
+    if (!file.is_open()) return;
+
+    std::vector<RadioStationEntry> parsed;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.find("stream_data[") == std::string::npos) continue;
+        size_t q1 = line.find('"');
+        size_t q2 = (q1 != std::string::npos) ? line.rfind('"') : std::string::npos;
+        if (q1 == std::string::npos || q2 == std::string::npos || q2 <= q1 + 1) continue;
+        std::string inner = line.substr(q1 + 1, q2 - q1 - 1);
+
+        // Split into 6 pipe fields: url|name|genre|country|bitrate|fav
+        std::vector<std::string> fields;
+        size_t start = 0;
+        for (int k = 0; k < 5; ++k) {
+            size_t pos = inner.find('|', start);
+            if (pos == std::string::npos) break;
+            fields.push_back(inner.substr(start, pos - start));
+            start = pos + 1;
+        }
+        fields.push_back(inner.substr(start));
+        if (fields.size() < 6) continue;
+
+        std::string url     = fields[0];
+        std::string name    = decodeSiiEscapes(fields[1]);
+        std::string genre   = decodeSiiEscapes(fields[2]);
+        std::string country = decodeSiiEscapes(fields[3]);
+        uint16_t bitrate    = static_cast<uint16_t>(std::atoi(fields[4].c_str()));
+        uint8_t flags       = (std::atoi(fields[5].c_str()) != 0) ? RADIO_FLAG_FAVORITE : 0;
+
+        auto stripTabs = [](std::string& s) {
+            for (char& ch : s) if (ch == '\t' || ch == '\r' || ch == '\n') ch = ' ';
+        };
+        stripTabs(name);
+        stripTabs(genre);
+        stripTabs(country);
+        stripTabs(url);
+
+        std::string payload = name + "\t" + genre + "\t" + country + "\t" + url;
+        if (payload.size() > 512) payload.resize(512);
+        parsed.push_back(RadioStationEntry{std::move(payload), bitrate, flags});
+    }
+
+    std::lock_guard<std::mutex> lock(g_radioMtx);
+    g_radioStations = std::move(parsed);
+}
+
+void buildRadioRowPacket(uint16_t idx, uint16_t total, const RadioStationEntry& e, std::vector<uint8_t>& out) {
+    const uint16_t plen = static_cast<uint16_t>(std::min<size_t>(e.payload.size(), 512));
+    out.resize(sizeof(RadioRowHeader) + plen + 1);
+    RadioRowHeader hdr{};
+    hdr.magic      = PACKET_MAGIC_RADIO_ROW;
+    hdr.index      = idx;
+    hdr.totalCount = total;
+    hdr.flags      = e.flags;
+    hdr.bitrate    = e.bitrate;
+    hdr.payloadLen = plen;
+    std::memcpy(out.data(), &hdr, sizeof(hdr));
+    if (plen > 0) std::memcpy(out.data() + sizeof(hdr), e.payload.data(), plen);
+    out.back() = computeXorChecksum(out.data(), out.size() - 1);
+}
+
+HWND findEts2ForegroundWindow() {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return nullptr;
+    DWORD fgPid = 0;
+    GetWindowThreadProcessId(fg, &fgPid);
+    return (fgPid == GetCurrentProcessId()) ? fg : nullptr;
+}
+
+void sendEts2Key(WORD vk, bool extended) {
+    if (!findEts2ForegroundWindow()) return;
+    UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    INPUT inputs[2]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = vk;
+    inputs[0].ki.wScan = static_cast<WORD>(sc);
+    inputs[0].ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+    inputs[1] = inputs[0];
+    inputs[1].ki.dwFlags |= KEYEVENTF_KEYUP;
+    SendInput(1, &inputs[0], sizeof(INPUT));
+    Sleep(22);
+    SendInput(1, &inputs[1], sizeof(INPUT));
+}
+
+void clickEts2Ui16x9(float nx, float ny) {
+    HWND fg = findEts2ForegroundWindow();
+    if (!fg) return;
+    RECT rc{};
+    if (!GetClientRect(fg, &rc) || rc.right <= rc.left || rc.bottom <= rc.top) return;
+    const float cw = static_cast<float>(rc.right - rc.left);
+    const float ch = static_cast<float>(rc.bottom - rc.top);
+    const float uiW = std::min(cw, ch * (16.0f / 9.0f));
+    const float leftPad = (cw - uiW) * 0.5f;
+
+    POINT pt{
+        static_cast<LONG>(leftPad + nx * uiW),
+        static_cast<LONG>(ny * ch)
+    };
+    if (!ClientToScreen(fg, &pt)) return;
+
+    const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int vw = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1);
+    const int vh = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
+    const LONG absX = static_cast<LONG>(((pt.x - vx) * 65535.0) / vw);
+    const LONG absY = static_cast<LONG>(((pt.y - vy) * 65535.0) / vh);
+
+    INPUT mv{};
+    mv.type = INPUT_MOUSE;
+    mv.mi.dx = absX;
+    mv.mi.dy = absY;
+    mv.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    SendInput(1, &mv, sizeof(INPUT));
+    Sleep(18);
+
+    INPUT down{};
+    down.type = INPUT_MOUSE;
+    down.mi.dx = absX;
+    down.mi.dy = absY;
+    down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    SendInput(1, &down, sizeof(INPUT));
+    Sleep(24);
+
+    INPUT up = down;
+    up.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    SendInput(1, &up, sizeof(INPUT));
+}
+
+void handleUiCommand(const UiCommandPacket& c) {
+    switch (c.cmd) {
+        case UI_CMD_UP:               sendEts2Key(VK_UP, true); break;
+        case UI_CMD_DOWN:             sendEts2Key(VK_DOWN, true); break;
+        case UI_CMD_LEFT:             sendEts2Key(VK_LEFT, true); break;
+        case UI_CMD_RIGHT:            sendEts2Key(VK_RIGHT, true); break;
+        case UI_CMD_TAB:              sendEts2Key(VK_TAB, false); break;
+        case UI_CMD_ENTER:            sendEts2Key(VK_RETURN, false); break;
+        case UI_CMD_ESC:              sendEts2Key(VK_ESCAPE, false); break;
+        case UI_CMD_DELIVERY_OPT_1:   clickEts2Ui16x9(0.41f, 0.31f); break;
+        case UI_CMD_DELIVERY_OPT_2:   clickEts2Ui16x9(0.41f, 0.45f); break;
+        case UI_CMD_DELIVERY_OPT_3:   clickEts2Ui16x9(0.41f, 0.59f); break;
+        case UI_CMD_DELIVERY_CONFIRM: clickEts2Ui16x9(0.50f, 0.725f); break;
+        case UI_CMD_RADIO_LIST_REQ:
+            loadRadioStations();
+            g_radioSyncRequested.store(true, std::memory_order_relaxed);
+            break;
+        default: break;
+    }
+}
+
 void networkWorker() {
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -317,8 +527,10 @@ void networkWorker() {
         logInfo(okBuf);
     }
 
+    loadRadioStations();
+
     SOCKET tcpClientSock = INVALID_SOCKET;
-    uint8_t tcpStream[256]{};
+    uint8_t tcpStream[1024]{};
     size_t tcpStreamLen = 0;
 
     uint16_t lastSeq = 0;
@@ -329,6 +541,9 @@ void networkWorker() {
     auto lastPacketRx = std::chrono::steady_clock::now();
     auto lastTelemSend = std::chrono::steady_clock::now();
     uint8_t rxBuf[128];
+    size_t radioSendCursor = 0;
+    bool radioSending = false;
+    std::vector<uint8_t> radioPktBuf;
 
     while (g_netRunning.load(std::memory_order_acquire)) {
         fd_set readSet;
@@ -371,6 +586,7 @@ void networkWorker() {
                     if (r <= 0) break;
 
                     PhoneControlPacket pkt{};
+                    UiCommandPacket uiCmd{};
                     if (validateControlPacket(rxBuf, static_cast<size_t>(r), &pkt)) {
                         const bool sourceChanged = (activeTransport != ActiveTransport::UDP) ||
                                                    (from.sin_addr.s_addr != activeSource.sin_addr.s_addr) ||
@@ -389,6 +605,8 @@ void networkWorker() {
                         latest = pkt;
                         latestFrom = from;
                         gotAny = true;
+                    } else if (validateUiCommandPacket(rxBuf, static_cast<size_t>(r), &uiCmd)) {
+                        handleUiCommand(uiCmd);
                     }
                 }
 
@@ -403,6 +621,8 @@ void networkWorker() {
                         g_clientAddr = latestFrom;
                     }
                     if (!wasConnected) {
+                        radioSendCursor = 0;
+                        radioSending = true;
                         char ipStr[INET_ADDRSTRLEN]{};
                         inet_ntop(AF_INET, &latestFrom.sin_addr, ipStr, sizeof(ipStr));
                         char msg[128];
@@ -437,15 +657,31 @@ void networkWorker() {
                 bool gotTcp = false;
                 PhoneControlPacket latestTcp{};
                 size_t cursor = 0;
-                while (cursor + sizeof(PhoneControlPacket) <= tcpStreamLen) {
-                    PhoneControlPacket pkt{};
-                    if (validateControlPacket(tcpStream + cursor, sizeof(PhoneControlPacket), &pkt)) {
-                        mergedMask = gotTcp ? (mergedMask | pkt.buttonMask) : pkt.buttonMask;
-                        latestTcp = pkt;
-                        gotTcp = true;
-                        cursor += sizeof(PhoneControlPacket);
+                while (cursor + 2 <= tcpStreamLen) {
+                    const uint16_t magic = static_cast<uint16_t>(tcpStream[cursor]) |
+                                           (static_cast<uint16_t>(tcpStream[cursor + 1]) << 8);
+                    if (magic == PROTOCOL_MAGIC) {
+                        if (cursor + sizeof(PhoneControlPacket) > tcpStreamLen) break;
+                        PhoneControlPacket pkt{};
+                        if (validateControlPacket(tcpStream + cursor, sizeof(PhoneControlPacket), &pkt)) {
+                            mergedMask = gotTcp ? (mergedMask | pkt.buttonMask) : pkt.buttonMask;
+                            latestTcp = pkt;
+                            gotTcp = true;
+                            cursor += sizeof(PhoneControlPacket);
+                        } else {
+                            ++cursor;
+                        }
+                    } else if (magic == PACKET_MAGIC_UI_CMD) {
+                        if (cursor + sizeof(UiCommandPacket) > tcpStreamLen) break;
+                        UiCommandPacket uiCmd{};
+                        if (validateUiCommandPacket(tcpStream + cursor, sizeof(UiCommandPacket), &uiCmd)) {
+                            handleUiCommand(uiCmd);
+                            cursor += sizeof(UiCommandPacket);
+                        } else {
+                            ++cursor;
+                        }
                     } else {
-                        ++cursor; // Resynchronize to next valid magic/checksum boundary
+                        ++cursor; // Resynchronize
                     }
                 }
                 if (cursor > 0) {
@@ -461,7 +697,11 @@ void networkWorker() {
                     hasSeq = true;
                     lastSeq = latestTcp.sequenceId;
                     applyControlPacket(latestTcp, mergedMask, prevPacketMask);
-                    g_ctrl.hasClient.store(true, std::memory_order_relaxed);
+                    bool wasConn = g_ctrl.hasClient.exchange(true, std::memory_order_relaxed);
+                    if (!wasConn) {
+                        radioSendCursor = 0;
+                        radioSending = true;
+                    }
                 }
             }
         }
@@ -505,6 +745,33 @@ void networkWorker() {
                 sendto(g_udpSocket, reinterpret_cast<const char*>(&outPkt), sizeof(outPkt), 0,
                        reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
             }
+        }
+
+        if (g_radioSyncRequested.exchange(false, std::memory_order_relaxed)) {
+            radioSendCursor = 0;
+            radioSending = true;
+        }
+        if (radioSending && g_ctrl.hasClient.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> rlock(g_radioMtx);
+            const size_t total = g_radioStations.size();
+            const size_t burstEnd = std::min(total, radioSendCursor + 12);
+            for (size_t idx = radioSendCursor; idx < burstEnd; ++idx) {
+                buildRadioRowPacket(static_cast<uint16_t>(idx), static_cast<uint16_t>(total), g_radioStations[idx], radioPktBuf);
+                if (activeTransport == ActiveTransport::TCP && tcpClientSock != INVALID_SOCKET) {
+                    int sent = send(tcpClientSock, reinterpret_cast<const char*>(radioPktBuf.data()), static_cast<int>(radioPktBuf.size()), 0);
+                    if (sent == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) break;
+                } else if (activeTransport == ActiveTransport::UDP) {
+                    sockaddr_in dest{};
+                    {
+                        std::lock_guard<std::mutex> lock(g_clientAddrMtx);
+                        dest = g_clientAddr;
+                    }
+                    sendto(g_udpSocket, reinterpret_cast<const char*>(radioPktBuf.data()), static_cast<int>(radioPktBuf.size()), 0,
+                           reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+                }
+            }
+            radioSendCursor = burstEnd;
+            if (radioSendCursor >= total) radioSending = false;
         }
     }
 
@@ -859,7 +1126,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_speed, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemSpeedMps, nullptr);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_engine_rpm, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemFloat, &g_telem.pkt.engineRpm);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_brake_air_pressure, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemFloat, &g_telem.pkt.airPressureBar);
-    reg(SCS_TELEMETRY_TRUCK_CHANNEL_engine_gear, SCS_U32_NIL, SCS_VALUE_TYPE_s32, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemS32, &g_telem.pkt.gear);
+    reg(SCS_TELEMETRY_TRUCK_CHANNEL_displayed_gear, SCS_U32_NIL, SCS_VALUE_TYPE_s32, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemS32, &g_telem.pkt.gear);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_cruise_control, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemCruiseMps, nullptr);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_navigation_speed_limit, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemSpeedLimitMps, nullptr);
     reg(SCS_TELEMETRY_TRUCK_CHANNEL_navigation_distance, SCS_U32_NIL, SCS_VALUE_TYPE_float, SCS_TELEMETRY_CHANNEL_FLAG_none, &onTelemNavDistance, nullptr);

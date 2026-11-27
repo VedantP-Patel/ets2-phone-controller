@@ -12,16 +12,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.down
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.up
 import androidx.compose.ui.unit.dp
 import com.ets2controller.config.ControllerSettings
+import com.ets2controller.config.DEFAULT_QUICK_DOCK_BITS
+import com.ets2controller.network.RadioStation
 import com.ets2controller.network.TruckTelemetryV2
+import com.ets2controller.network.UiNavCommand
 import com.ets2controller.ui.theme.GasPedalGreen
 import com.ets2controller.ui.theme.ScaniaAmber
 import org.junit.Assert.assertEquals
@@ -171,5 +177,163 @@ class CockpitAnimationTest {
         composeRule.onNodeWithText("ACC GAP").assertIsDisplayed()
         composeRule.onNodeWithText("\u2715 Close").performClick()
         composeRule.mainClock.advanceTimeBy(300L)
+    }
+
+    @Test
+    fun radioBrowserAndDeliveryUiNavWorkCleanly() {
+        composeRule.mainClock.autoAdvance = false
+        val cmds = mutableListOf<Byte>()
+        var pickedStation: RadioStation? = null
+        var phoneStream by mutableStateOf(false)
+        val sampleStations = listOf(
+            RadioStation(0, "TruckersFM", "Sim radio", "EN", 320, true, "https://radio.truckers.fm/"),
+            RadioStation(1, "Simulator Radio", "Sim radio", "EN", 128, false, "http://radio.simulatorradio.com:8002/stream.mp3")
+        )
+
+        composeRule.setContent {
+            DesignCockpitScreen(
+                isConnected = true,
+                connectedIp = "127.0.0.1",
+                packetsPerSec = 100,
+                savedManualIp = "127.0.0.1",
+                onSetManualIp = {},
+                rawAngleProvider = { 0f },
+                sensorModeLabel = "ACCEL",
+                throttle = 0f,
+                brake = 0f,
+                clutch = 0f,
+                buttonMask = 0L,
+                settings = ControllerSettings(),
+                telemetry = TruckTelemetryV2(gear = 5, safetyFlags = 1 shl 5),
+                onThrottleChange = {},
+                onBrakeChange = {},
+                onClutchChange = {},
+                onButtonStateChange = { _, _ -> },
+                onPulseBit = {},
+                onCalibrateClick = {},
+                onSaveSettings = {},
+                onLookChange = { _, _ -> },
+                onTouchSteerChange = {},
+                radioStations = sampleStations,
+                usePhoneStream = phoneStream,
+                onToggleRadioMode = { phoneStream = it },
+                onPlayStreamStation = { pickedStation = it },
+                onUiCommand = { cmds.add(it) }
+            )
+        }
+
+        composeRule.mainClock.advanceTimeBy(150L)
+        // Top bar shows real station name instead of hardcoded CAB RADIO
+        composeRule.onNodeWithText("TRUCKERSFM").assertIsDisplayed()
+        // Auto gear displayed cleanly
+        composeRule.onNodeWithText("D5").assertIsDisplayed()
+
+        // Open Radio Browser, switch to PHONE STREAM, pick Simulator Radio, and close
+        composeRule.onNodeWithContentDescription("Open radio browser").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        composeRule.onNodeWithText("PHONE STREAM").performClick()
+        composeRule.mainClock.advanceTimeBy(100L)
+        composeRule.onNodeWithText("Simulator Radio").performClick()
+        composeRule.mainClock.advanceTimeBy(100L)
+        assertEquals("Simulator Radio", pickedStation?.name)
+        composeRule.onNodeWithText("\u2715 Close").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+
+        // Open Trailer Delivery & UI Nav Pad, pick Option 1 and Confirm
+        composeRule.onNodeWithContentDescription("dpad").performTouchInput { click(center) }
+        composeRule.mainClock.advanceTimeBy(250L)
+        composeRule.onNodeWithText("Where do you need it?").performClick()
+        composeRule.mainClock.advanceTimeBy(100L)
+        composeRule.onNodeWithText("\u2713  CONFIRM DELIVERY").performClick()
+        composeRule.mainClock.advanceTimeBy(100L)
+        assertTrue(cmds.contains(UiNavCommand.DELIVERY_OPT_1))
+        assertTrue(cmds.contains(UiNavCommand.DELIVERY_CONFIRM))
+    }
+
+    @Test
+    fun editableQuickDockMorePinAndOrientationControlsWorkCleanly() {
+        composeRule.mainClock.autoAdvance = false
+        var activeSettings by mutableStateOf(ControllerSettings())
+
+        composeRule.setContent {
+            DesignCockpitScreen(
+                isConnected = true,
+                connectedIp = "127.0.0.1",
+                packetsPerSec = 100,
+                savedManualIp = "127.0.0.1",
+                onSetManualIp = {},
+                rawAngleProvider = { 0f },
+                sensorModeLabel = "ACCEL",
+                throttle = 0f,
+                brake = 0f,
+                clutch = 0f,
+                buttonMask = 0L,
+                settings = activeSettings,
+                telemetry = TruckTelemetryV2(),
+                onThrottleChange = {},
+                onBrakeChange = {},
+                onClutchChange = {},
+                onButtonStateChange = { _, _ -> },
+                onPulseBit = {},
+                onCalibrateClick = {},
+                onSaveSettings = { activeSettings = it },
+                onLookChange = { _, _ -> },
+                onTouchSteerChange = {}
+            )
+        }
+
+        // Open Quick Dock -> enter Edit mode -> reorder slot 1 right -> swap slot 1 with Wipers -> Reset -> Done
+        composeRule.onNodeWithContentDescription("Open quick dock").performTouchInput { click(center) }
+        composeRule.mainClock.advanceTimeBy(300L)
+        composeRule.onNodeWithText("Edit").performClick()
+        composeRule.mainClock.advanceTimeBy(200L)
+        composeRule.onNodeWithContentDescription("Move slot 1 right").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        assertEquals(listOf(2, 1, 22, 58, 54, 55, 32, 59), activeSettings.quickDockBits)
+
+        composeRule.onNodeWithText("#1").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        composeRule.onNodeWithText("REPLACE SLOT #1").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Pick Wipers").performScrollTo().performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        assertEquals(12, activeSettings.quickDockBits[0])
+
+        composeRule.onNodeWithText("Reset").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        assertEquals(DEFAULT_QUICK_DOCK_BITS, activeSettings.quickDockBits)
+
+        composeRule.onNodeWithText("Done").performClick()
+        composeRule.mainClock.advanceTimeBy(150L)
+        composeRule.onNodeWithContentDescription("Dismiss quick dock").performTouchInput { click(Offset(20f, 20f)) }
+        composeRule.mainClock.advanceTimeBy(300L)
+
+        // Open More -> enter Pin to Dock mode -> pin Diff Lock into slot #3 -> Close
+        composeRule.onNodeWithContentDescription("more").performTouchInput { click(center) }
+        composeRule.mainClock.advanceTimeBy(300L)
+        composeRule.onNodeWithText("Pin to Dock").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        composeRule.onNodeWithContentDescription("Pin Diff lock").performScrollTo().performClick()
+        composeRule.mainClock.advanceTimeBy(100L)
+        composeRule.onNodeWithContentDescription("Quick dock slot 3").performClick()
+        composeRule.mainClock.advanceTimeBy(150L)
+        assertEquals(18, activeSettings.quickDockBits[2])
+        composeRule.onNodeWithText("\u2715 Close").performClick()
+        composeRule.mainClock.advanceTimeBy(300L)
+
+        // Hold Tuning (gear) tile to open Tuning -> Cockpit -> select Lock R -> Save & apply
+        composeRule.onNodeWithContentDescription("gear").performTouchInput {
+            down(center)
+            advanceEventTime(480L)
+            up()
+        }
+        composeRule.mainClock.advanceTimeBy(350L)
+        composeRule.onNodeWithText("COCKPIT").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        composeRule.onNodeWithText("SCREEN ORIENTATION").assertIsDisplayed()
+        composeRule.onNodeWithText("Lock R").performClick()
+        composeRule.mainClock.advanceTimeBy(100L)
+        composeRule.onNodeWithText("Save & apply").performClick()
+        composeRule.mainClock.advanceTimeBy(250L)
+        assertEquals("REVERSE", activeSettings.orientationMode)
     }
 }

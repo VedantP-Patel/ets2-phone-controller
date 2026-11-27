@@ -39,8 +39,44 @@ data class ControllerSettings(
     // Ergonomics & motion preferences
     val ergonomicLayout: Boolean = true,
     val relativePedalDrag: Boolean = false,
-    val reduceMotion: Boolean = false
+    val reduceMotion: Boolean = false,
+    val orientationMode: String = "LANDSCAPE", // LANDSCAPE, REVERSE, SENSOR
+    val quickDockBits: List<Int> = DEFAULT_QUICK_DOCK_BITS
 )
+
+val DEFAULT_QUICK_DOCK_BITS: List<Int> = listOf(1, 2, 22, 58, 54, 55, 32, 59)
+
+fun normalizeQuickDockBits(bits: List<Int>): List<Int> {
+    val clean = bits.filter { it in 0..63 }.distinct().toMutableList()
+    for (fallback in DEFAULT_QUICK_DOCK_BITS) {
+        if (clean.size >= 8) break
+        if (fallback !in clean) clean.add(fallback)
+    }
+    return clean.take(8)
+}
+
+fun swapQuickDockSlots(bits: List<Int>, fromIdx: Int, toIdx: Int): List<Int> {
+    val list = normalizeQuickDockBits(bits).toMutableList()
+    if (fromIdx !in list.indices || toIdx !in list.indices || fromIdx == toIdx) return list
+    val tmp = list[fromIdx]
+    list[fromIdx] = list[toIdx]
+    list[toIdx] = tmp
+    return list
+}
+
+fun placeInQuickDockSlot(bits: List<Int>, slotIdx: Int, newBit: Int): List<Int> {
+    val list = normalizeQuickDockBits(bits).toMutableList()
+    if (slotIdx !in list.indices || newBit !in 0..63) return list
+    val existingIdx = list.indexOf(newBit)
+    if (existingIdx >= 0) {
+        val old = list[slotIdx]
+        list[slotIdx] = newBit
+        list[existingIdx] = old
+    } else {
+        list[slotIdx] = newBit
+    }
+    return list
+}
 
 class SettingsRepository(context: Context) {
     private val prefs: SharedPreferences = 
@@ -95,8 +131,16 @@ class SettingsRepository(context: Context) {
             speedSensitiveDeadzone = prefs.getBoolean("speed_sensitive_deadzone", true),
             ergonomicLayout = prefs.getBoolean("ergonomic_layout", true),
             relativePedalDrag = prefs.getBoolean("relative_pedal_drag", false),
-            reduceMotion = prefs.getBoolean("reduce_motion", false)
+            reduceMotion = prefs.getBoolean("reduce_motion", false),
+            orientationMode = prefs.getString("orientation_mode", "LANDSCAPE") ?: "LANDSCAPE",
+            quickDockBits = parseQuickDockBits(prefs.getString("quick_dock_bits", null))
         )
+    }
+
+    private fun parseQuickDockBits(raw: String?): List<Int> {
+        if (raw.isNullOrBlank()) return DEFAULT_QUICK_DOCK_BITS
+        val parsed = raw.split(',').mapNotNull { it.trim().toIntOrNull() }
+        return if (parsed.isEmpty()) DEFAULT_QUICK_DOCK_BITS else normalizeQuickDockBits(parsed)
     }
 
     fun saveSettings(settings: ControllerSettings) {
@@ -135,6 +179,8 @@ class SettingsRepository(context: Context) {
             .putBoolean("ergonomic_layout", settings.ergonomicLayout)
             .putBoolean("relative_pedal_drag", settings.relativePedalDrag)
             .putBoolean("reduce_motion", settings.reduceMotion)
+            .putString("orientation_mode", settings.orientationMode)
+            .putString("quick_dock_bits", normalizeQuickDockBits(settings.quickDockBits).joinToString(","))
             .apply()
     }
 }

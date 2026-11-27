@@ -1,5 +1,8 @@
 package com.ets2controller.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -8,6 +11,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -91,9 +97,23 @@ fun DataOverlay(
                     .padding(horizontal = 10.dp, vertical = 8.dp)
             )
         }
-        when (tab) {
-            DataTab.TRIP -> TripPage(telemetry, speedUnitMph, accentColor, Modifier.weight(1f))
-            DataTab.TRUCK -> TruckPage(telemetry, brakeTempC, accentColor, Modifier.weight(1f))
+        val reduceMotion = LocalReduceMotion.current
+        AnimatedContent(
+            targetState = tab,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            transitionSpec = {
+                if (reduceMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    fadeIn(tween(170)) togetherWith fadeOut(tween(120))
+                }
+            },
+            label = "dataTabTransition"
+        ) { activeTab ->
+            when (activeTab) {
+                DataTab.TRIP -> TripPage(telemetry, speedUnitMph, accentColor, Modifier.fillMaxSize())
+                DataTab.TRUCK -> TruckPage(telemetry, brakeTempC, accentColor, Modifier.fillMaxSize())
+            }
         }
     }
 }

@@ -20,8 +20,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.doOnLayout
 import com.ets2controller.audio.CockpitAudioSynthesizer
+import com.ets2controller.audio.RadioStreamPlayer
 import com.ets2controller.config.ControllerSettings
 import com.ets2controller.config.SettingsRepository
+import com.ets2controller.network.RadioStation
 import com.ets2controller.network.TruckTelemetryV2
 import com.ets2controller.network.UdpCockpitClient
 import com.ets2controller.sensor.SteeringManager
@@ -41,7 +43,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        settingsRepo = SettingsRepository(this)
+        val initialSettings = settingsRepo.loadSettings()
+        applyOrientationMode(initialSettings.orientationMode)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -64,9 +68,8 @@ class MainActivity : ComponentActivity() {
             getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
 
-        settingsRepo = SettingsRepository(this)
         steeringManager = SteeringManager(this).apply {
-            settings = settingsRepo.loadSettings()
+            settings = initialSettings
             audioSynth.isEnabled = settings.soundEffectsEnabled
             onMicroHapticFeedback = { triggerShortHaptic(18, 60) }
             onAutoCancelBlinker = { isLeft -> udpClient?.triggerPulse(if (isLeft) 4 else 5, 65L) }
@@ -89,6 +92,9 @@ class MainActivity : ComponentActivity() {
 
             MaterialTheme(colorScheme = darkColorScheme()) {
                 var settings by remember { mutableStateOf(steeringManager.settings) }
+                LaunchedEffect(settings.orientationMode) {
+                    applyOrientationMode(settings.orientationMode)
+                }
                 var isConnected by remember { mutableStateOf(false) }
                 var connectedIp by remember { mutableStateOf("") }
                 var packetsPerSec by remember { mutableIntStateOf(0) }
@@ -99,6 +105,23 @@ class MainActivity : ComponentActivity() {
                 var clutch by remember { mutableFloatStateOf(0f) }
                 var buttonMask by remember { mutableLongStateOf(0L) }
                 var coachSmoothMode by remember { mutableStateOf(false) }
+
+                var radioStations by remember { mutableStateOf<List<RadioStation>>(emptyList()) }
+                var usePhoneStream by remember { mutableStateOf(false) }
+                var streamPlaying by remember { mutableStateOf(false) }
+                var streamBuffering by remember { mutableStateOf(false) }
+                var streamStation by remember { mutableStateOf<RadioStation?>(null) }
+                var streamError by remember { mutableStateOf<String?>(null) }
+                var streamVolume by remember { mutableFloatStateOf(0.85f) }
+
+                val streamPlayer = remember {
+                    RadioStreamPlayer { playing, buffering, st, err ->
+                        streamPlaying = playing
+                        streamBuffering = buffering
+                        if (st != null) streamStation = st
+                        streamError = err
+                    }
+                }
 
                 DisposableEffect(Unit) {
                     liveSpeedSens = steeringManager.settings.speedSensitivity
@@ -133,6 +156,9 @@ class MainActivity : ComponentActivity() {
                             isConnected = conn
                             connectedIp = ip
                             packetsPerSec = pps
+                        },
+                        onRadioStations = { list ->
+                            radioStations = list
                         }
                     ).apply {
                         steeringProvider = {
@@ -150,6 +176,7 @@ class MainActivity : ComponentActivity() {
                     steeringManager.start()
 
                     onDispose {
+                        streamPlayer.release()
                         steeringManager.stop()
                         client.stop()
                         udpClient = null
@@ -225,9 +252,47 @@ class MainActivity : ComponentActivity() {
                         udpClient?.lookX = lx
                         udpClient?.lookY = ly
                     },
-                    onTouchSteerChange = { touchSteer = it }
+                    onTouchSteerChange = { touchSteer = it },
+                    radioStations = radioStations,
+                    streamPlaying = streamPlaying,
+                    streamBuffering = streamBuffering,
+                    streamStation = streamStation,
+                    streamError = streamError,
+                    streamVolume = streamVolume,
+                    usePhoneStream = usePhoneStream,
+                    onToggleRadioMode = { phoneMode ->
+                        usePhoneStream = phoneMode
+                        if (!phoneMode) streamPlayer.pauseIfPlaying()
+                    },
+                    onPlayStreamStation = { st ->
+                        streamPlayer.play(st)
+                    },
+                    onToggleStreamPlayPause = {
+                        streamPlayer.togglePlayPause(radioStations.firstOrNull())
+                    },
+                    onStreamVolumeChange = { v ->
+                        streamVolume = v
+                        streamPlayer.setVolume(v)
+                    },
+                    onRequestRadioSync = {
+                        udpClient?.requestRadioList()
+                    },
+                    onUiCommand = { cmd ->
+                        udpClient?.sendUiCommand(cmd)
+                    }
                 )
             }
+        }
+    }
+
+    private fun applyOrientationMode(mode: String) {
+        val target = when (mode) {
+            "REVERSE" -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            "SENSOR" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        if (requestedOrientation != target) {
+            requestedOrientation = target
         }
     }
 

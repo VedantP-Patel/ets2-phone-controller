@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ets2controller.config.ControllerSettings
+import com.ets2controller.network.RadioStation
 import com.ets2controller.network.TruckTelemetryV2
 import com.ets2controller.ui.theme.*
 import kotlinx.coroutines.delay
@@ -99,7 +100,20 @@ fun DesignCockpitScreen(
     onCalibrateClick: () -> Unit,
     onSaveSettings: (ControllerSettings) -> Unit,
     onLookChange: (Float, Float) -> Unit,
-    onTouchSteerChange: (Float?) -> Unit
+    onTouchSteerChange: (Float?) -> Unit,
+    radioStations: List<RadioStation> = emptyList(),
+    streamPlaying: Boolean = false,
+    streamBuffering: Boolean = false,
+    streamStation: RadioStation? = null,
+    streamError: String? = null,
+    streamVolume: Float = 0.85f,
+    usePhoneStream: Boolean = false,
+    onToggleRadioMode: (Boolean) -> Unit = {},
+    onPlayStreamStation: (RadioStation) -> Unit = {},
+    onToggleStreamPlayPause: () -> Unit = {},
+    onStreamVolumeChange: (Float) -> Unit = {},
+    onRequestRadioSync: () -> Unit = {},
+    onUiCommand: (Byte) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -136,8 +150,11 @@ fun DesignCockpitScreen(
     var showDock by remember { mutableStateOf(false) }
     var showTuning by remember { mutableStateOf(false) }
     var showConn by remember { mutableStateOf(false) }
+    var showRadio by remember { mutableStateOf(false) }
+    var showUiNav by remember { mutableStateOf(false) }
     var localRetarder by remember { mutableIntStateOf(0) }
     var radioOn by remember { mutableStateOf(false) }
+    var ets2StationIdx by remember { mutableIntStateOf(0) }
     var recenterLabel by remember { mutableStateOf("CENTER") }
     var brakeTempC by remember { mutableFloatStateOf(140f) }
 
@@ -222,10 +239,12 @@ fun DesignCockpitScreen(
         onTouchSteerChange(if (m == SteerMode.GYRO) null else 0f)
     }
 
-    BackHandler(enabled = showMore || showDock || showData || showTuning || showConn) {
+    BackHandler(enabled = showMore || showDock || showData || showTuning || showConn || showRadio || showUiNav) {
         when {
             showConn -> showConn = false
             showTuning -> showTuning = false
+            showRadio -> showRadio = false
+            showUiNav -> showUiNav = false
             showData -> showData = false
             showMore -> showMore = false
             showDock -> showDock = false
@@ -291,41 +310,82 @@ fun DesignCockpitScreen(
                             )
                         }
                     }
+                    val stepRadio: (Int) -> Unit = { delta ->
+                        if (usePhoneStream) {
+                            if (radioStations.isNotEmpty()) {
+                                val curPos = radioStations.indexOfFirst { it.index == streamStation?.index }.let { if (it < 0) 0 else it }
+                                val nextPos = (curPos + delta).mod(radioStations.size)
+                                onPlayStreamStation(radioStations[nextPos])
+                            }
+                        } else {
+                            if (radioStations.isNotEmpty()) {
+                                ets2StationIdx = (ets2StationIdx + delta).mod(radioStations.size)
+                            }
+                            pulse(if (delta > 0) 15 else 16)
+                        }
+                    }
+                    val toggleRadioPlay: () -> Unit = {
+                        if (usePhoneStream) {
+                            onToggleStreamPlayPause()
+                        } else {
+                            radioOn = !radioOn
+                            pulse(60) // radiotoggle: direct Play/Pause while driving without pausing ETS2
+                        }
+                    }
+                    val activeRadioPlaying = if (usePhoneStream) streamPlaying else radioOn
+                    val activeStationName = when {
+                        usePhoneStream -> streamStation?.name ?: radioStations.firstOrNull()?.name ?: "PHONE STREAM"
+                        radioOn -> radioStations.getOrNull(ets2StationIdx)?.name ?: "ETS2 RADIO ON"
+                        radioStations.isNotEmpty() -> radioStations.getOrNull(ets2StationIdx)?.name ?: "CAB RADIO"
+                        else -> if (isNarrow) "RADIO" else "TAP FOR RADIO"
+                    }
                     DCard(modifier = Modifier.weight(1.45f).fillMaxHeight()) {
                         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.width(44.dp).fillMaxHeight()
+                                Modifier.width(36.dp).fillMaxHeight()
                                     .semantics { contentDescription = "Previous radio station" }
-                                    .clickable { pulse(16) },
+                                    .clickable { stepRadio(-1) },
                                 Alignment.Center
-                            ) { DIcon("prev", TextBright, Modifier.size(16.dp)) }
+                            ) { DIcon("prev", TextBright, Modifier.size(15.dp)) }
                             Row(
                                 Modifier.weight(1f).fillMaxHeight()
                                     .semantics { contentDescription = "Toggle cabin radio" }
-                                    .clickable { radioOn = !radioOn; pulse(14) },
+                                    .clickable { toggleRadioPlay() }
+                                    .padding(horizontal = 4.dp),
                                 horizontalArrangement = Arrangement.Center,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                DEq(radioOn)
-                                Spacer(Modifier.width(8.dp))
+                                DEq(activeRadioPlaying)
+                                Spacer(Modifier.width(6.dp))
                                 Text(
-                                    if (radioOn) "CAB RADIO" else if (isNarrow) "RADIO" else "TAP FOR RADIO",
-                                    color = TextBright, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp, maxLines = 1
+                                    activeStationName.uppercase(),
+                                    color = if (activeRadioPlaying) TextBright else TextMuted,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 0.4.sp,
+                                    maxLines = 1
                                 )
                             }
                             Box(
-                                Modifier.width(44.dp).fillMaxHeight()
-                                    .semantics { contentDescription = "Next radio station" }
-                                    .clickable { pulse(15) },
+                                Modifier.width(34.dp).fillMaxHeight()
+                                    .semantics { contentDescription = "Open radio browser" }
+                                    .clickable { showRadio = true },
                                 Alignment.Center
-                            ) { DIcon("next", TextBright, Modifier.size(16.dp)) }
+                            ) { DIcon("list", accent, Modifier.size(15.dp)) }
+                            Box(
+                                Modifier.width(36.dp).fillMaxHeight()
+                                    .semantics { contentDescription = "Next radio station" }
+                                    .clickable { stepRadio(1) },
+                                Alignment.Center
+                            ) { DIcon("next", TextBright, Modifier.size(15.dp)) }
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
                         DModeSwitch(mode, accent, topBarH, isNarrow) { setMode(it) }
-                        DTile("", "data", Modifier.size(48.dp, topBarH), iconSize = 18.dp, onTap = { showData = true })
-                        DTile("", "more", Modifier.size(48.dp, topBarH), tint = accent, iconSize = 20.dp, onTap = { showMore = true })
-                        DTile("", "gear", Modifier.size(48.dp, topBarH), guarded = true, holdMs = holdMs, iconSize = 18.dp, onTap = { showTuning = true })
+                        DTile("", "dpad", Modifier.size(42.dp, topBarH), tint = CruiseSkyBlue, iconSize = 17.dp, onTap = { showUiNav = true })
+                        DTile("", "data", Modifier.size(42.dp, topBarH), iconSize = 17.dp, onTap = { showData = true })
+                        DTile("", "more", Modifier.size(42.dp, topBarH), tint = accent, iconSize = 18.dp, onTap = { showMore = true })
+                        DTile("", "gear", Modifier.size(42.dp, topBarH), guarded = true, holdMs = holdMs, iconSize = 17.dp, onTap = { showTuning = true })
                     }
                 }
 
@@ -631,19 +691,33 @@ fun DesignCockpitScreen(
                 }
             }
 
-            val overlayEnter = if (settings.reduceMotion) EnterTransition.None else fadeIn(tween(180)) + scaleIn(tween(180), initialScale = 0.97f)
-            val overlayExit = if (settings.reduceMotion) ExitTransition.None else fadeOut(tween(130)) + scaleOut(tween(130), targetScale = 0.98f)
+            val overlayEnter = if (settings.reduceMotion) EnterTransition.None else fadeIn(tween(200, easing = FastOutSlowInEasing)) + scaleIn(tween(200, easing = FastOutSlowInEasing), initialScale = 0.96f)
+            val overlayExit = if (settings.reduceMotion) ExitTransition.None else fadeOut(tween(150)) + scaleOut(tween(150), targetScale = 0.97f)
 
             AnimatedVisibility(visible = showMore, enter = overlayEnter, exit = overlayExit) {
                 DMorePanel(
                     holdMs = holdMs, slideOffCancel = slideOff,
+                    quickDockBits = settings.quickDockBits,
+                    onUpdateQuickDock = { onSaveSettings(settings.copy(quickDockBits = it)) },
                     onTrigger = { pulse(it) }, onHoldChange = onButtonStateChange, onDismiss = { showMore = false }
                 )
             }
-            if (showDock) QuickDockOverlay(
-                accent, t, holdMs = holdMs, slideOffCancel = slideOff,
-                onTrigger = { pulse(it) }, onHoldChange = onButtonStateChange, onDismiss = { showDock = false }
-            )
+            AnimatedVisibility(
+                visible = showDock,
+                enter = if (settings.reduceMotion) EnterTransition.None else fadeIn(tween(180)),
+                exit = if (settings.reduceMotion) ExitTransition.None else fadeOut(tween(150))
+            ) {
+                QuickDockOverlay(
+                    accent, t, holdMs = holdMs, slideOffCancel = slideOff,
+                    quickDockBits = settings.quickDockBits,
+                    onUpdateQuickDock = { onSaveSettings(settings.copy(quickDockBits = it)) },
+                    sheetModifier = Modifier.animateEnterExit(
+                        enter = if (settings.reduceMotion) EnterTransition.None else slideInVertically(tween(240, easing = FastOutSlowInEasing)) { it },
+                        exit = if (settings.reduceMotion) ExitTransition.None else slideOutVertically(tween(200)) { it }
+                    ),
+                    onTrigger = { pulse(it) }, onHoldChange = onButtonStateChange, onDismiss = { showDock = false }
+                )
+            }
             AnimatedVisibility(visible = showData, enter = overlayEnter, exit = overlayExit) {
                 DataOverlay(t, brakeTempC, settings.speedUnitMph, accent, onDismiss = { showData = false })
             }
@@ -656,6 +730,62 @@ fun DesignCockpitScreen(
             }
             AnimatedVisibility(visible = showConn, enter = overlayEnter, exit = overlayExit) {
                 DConnectDialog(isConnected, connectedIp, packetsPerSec, savedManualIp, onSetManualIp, accent) { showConn = false }
+            }
+            AnimatedVisibility(visible = showRadio, enter = overlayEnter, exit = overlayExit) {
+                DRadioOverlay(
+                    stations = radioStations,
+                    accent = accent,
+                    usePhoneStream = usePhoneStream,
+                    ets2Playing = radioOn,
+                    ets2Index = ets2StationIdx,
+                    streamPlaying = streamPlaying,
+                    streamBuffering = streamBuffering,
+                    streamStation = streamStation,
+                    streamError = streamError,
+                    streamVolume = streamVolume,
+                    onToggleMode = { phoneMode ->
+                        onToggleRadioMode(phoneMode)
+                    },
+                    onSelectStation = { st ->
+                        if (usePhoneStream) {
+                            onPlayStreamStation(st)
+                        } else {
+                            ets2StationIdx = st.index
+                        }
+                    },
+                    onPrev = {
+                        if (usePhoneStream && radioStations.isNotEmpty()) {
+                            val curPos = radioStations.indexOfFirst { it.index == streamStation?.index }.let { if (it < 0) 0 else it }
+                            onPlayStreamStation(radioStations[(curPos - 1).mod(radioStations.size)])
+                        } else {
+                            if (radioStations.isNotEmpty()) ets2StationIdx = (ets2StationIdx - 1).mod(radioStations.size)
+                            pulse(16)
+                        }
+                    },
+                    onPlayPause = {
+                        if (usePhoneStream) onToggleStreamPlayPause()
+                        else { radioOn = !radioOn; pulse(60) }
+                    },
+                    onNext = {
+                        if (usePhoneStream && radioStations.isNotEmpty()) {
+                            val curPos = radioStations.indexOfFirst { it.index == streamStation?.index }.let { if (it < 0) 0 else it }
+                            onPlayStreamStation(radioStations[(curPos + 1).mod(radioStations.size)])
+                        } else {
+                            if (radioStations.isNotEmpty()) ets2StationIdx = (ets2StationIdx + 1).mod(radioStations.size)
+                            pulse(15)
+                        }
+                    },
+                    onEts2VolDown = { pulse(62) },
+                    onEts2VolUp = { pulse(61) },
+                    onEts2Fav = { pulse(63) },
+                    onOpenEts2RadioScreen = { pulse(14) },
+                    onStreamVolumeChange = onStreamVolumeChange,
+                    onRequestSync = onRequestRadioSync,
+                    onDismiss = { showRadio = false }
+                )
+            }
+            AnimatedVisibility(visible = showUiNav, enter = overlayEnter, exit = overlayExit) {
+                DUiNavOverlay(accent = accent, onUiCommand = onUiCommand, onDismiss = { showUiNav = false })
             }
         }
     }
@@ -698,7 +828,7 @@ private fun DModeSwitch(mode: SteerMode, accent: Color, barHeight: Dp, compact: 
             val on = mode == m
             Row(
                 modifier = Modifier.fillMaxHeight().background(if (on) accent else Color.Transparent)
-                    .clickable { onChange(m) }.padding(horizontal = if (compact) 8.dp else 11.dp),
+                    .clickable { onChange(m) }.padding(horizontal = if (compact) 7.dp else 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -915,9 +1045,21 @@ private fun Dash(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (banner != null) DChip(banner.text, banner.icon, banner.color, banner.pulse)
-                    else if (!compact) DChip("CAB", "eye", if (abs(peekAnim.value) > 0.08f) VolvoIceBlue else TextMuted, false)
+                AnimatedContent(
+                    targetState = banner,
+                    transitionSpec = {
+                        if (reduceMotion) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            fadeIn(tween(160)) togetherWith fadeOut(tween(120))
+                        }
+                    },
+                    label = "dashBannerTransition"
+                ) { activeBanner ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (activeBanner != null) DChip(activeBanner.text, activeBanner.icon, activeBanner.color, activeBanner.pulse)
+                        else if (!compact) DChip("CAB", "eye", if (abs(peekAnim.value) > 0.08f) VolvoIceBlue else TextMuted, false)
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (routeDistKm > 0) {
