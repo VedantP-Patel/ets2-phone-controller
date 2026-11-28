@@ -327,11 +327,13 @@ class UdpCockpitClient(
         if (trimmed.isEmpty()) {
             prefs.edit().remove("last_pc_ip").apply()
             targetHost.set(null)
+            activeTcpSocket.get()?.let { closeTcpSocket(it) }
             onConnectionState(false, "", 0)
             return
         }
         val addr = parseIpv4Literal(trimmed) ?: return
         targetHost.set(addr)
+        activeTcpSocket.get()?.let { closeTcpSocket(it) }
         prefs.edit().putString("last_pc_ip", trimmed).apply()
         val alive = (SystemClock.elapsedRealtime() - lastTelemetryRxMs.get()) < 2000L
         onConnectionState(alive, trimmed, 0)
@@ -526,11 +528,21 @@ class UdpCockpitClient(
             var lastStatsMs = SystemClock.elapsedRealtime()
             var lastProbeMs = 0L
             var lastTcpConnectAttemptMs = 0L
+            var prevLoopHost: String? = null
+            var hostStableSinceMs = SystemClock.elapsedRealtime()
 
             while (running.get()) {
                 val loopStart = SystemClock.elapsedRealtime()
                 val host = targetHost.get()
+                val hostStrNow = host?.hostAddress
+                if (hostStrNow != prevLoopHost) {
+                    prevLoopHost = hostStrNow
+                    hostStableSinceMs = loopStart
+                }
                 val telemetryAlive = (loopStart - lastTelemetryRxMs.get()) < 2000L
+                if (telemetryAlive && activeTcpSocket.get() == null) {
+                    hostStableSinceMs = loopStart
+                }
 
                 var effectiveMask = heldButtons.get()
                 val iter = pulseExpiryMap.entries.iterator()
@@ -566,15 +578,23 @@ class UdpCockpitClient(
                     lookY = lookY
                 )
 
-                if (host != null && host.isLoopbackAddress) {
-                    var tcp = activeTcpSocket.get()
-                    if ((tcp == null || tcp.isClosed) && (loopStart - lastTcpConnectAttemptMs) > 500L) {
+                val currentTcp = activeTcpSocket.get()
+                val useTcp = host != null && (
+                    host.isLoopbackAddress ||
+                    (currentTcp != null && !currentTcp.isClosed) ||
+                    (!telemetryAlive && (loopStart - hostStableSinceMs) > 1500L)
+                )
+
+                if (useTcp) {
+                    val target = checkNotNull(host)
+                    var tcp = currentTcp
+                    if ((tcp == null || tcp.isClosed) && (loopStart - lastTcpConnectAttemptMs) > 800L) {
                         lastTcpConnectAttemptMs = loopStart
                         try {
                             tcp = Socket().apply {
                                 tcpNoDelay = true
                                 soTimeout = 250
-                                connect(InetSocketAddress(host, PORT_CONTROL), 250)
+                                connect(InetSocketAddress(target, PORT_CONTROL), 250)
                             }
                             activeTcpSocket.set(tcp)
                         } catch (_: Exception) {

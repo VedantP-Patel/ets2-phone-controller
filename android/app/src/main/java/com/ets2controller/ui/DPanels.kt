@@ -363,12 +363,35 @@ fun DConnectionContent(
                 )
             }
         }
-        OutlinedTextField(
-            value = ip, onValueChange = { ip = it }, singleLine = true,
-            label = { Text("PC IPv4 address (127.0.0.1 for USB ADB)") }, modifier = Modifier.fillMaxWidth()
-        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = ip, onValueChange = { ip = it }, singleLine = true,
+                label = { Text("PC IPv4 address (127.0.0.1 for USB ADB)") }, modifier = Modifier.weight(1f)
+            )
+            Text(
+                "USB 127.0.0.1",
+                color = accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(CockpitDeep)
+                    .border(1.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .clickable {
+                        ip = "127.0.0.1"
+                        onSetManualIp("127.0.0.1")
+                        statusNotice = "Connecting over USB ADB (127.0.0.1)\u2026"
+                    }
+                    .padding(horizontal = 10.dp, vertical = 14.dp)
+            )
+        }
         Text("CHECKLIST", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.8.sp)
-        CheckLine(true, "Same Wi-Fi, USB Tethering (RNDIS), or ADB USB (127.0.0.1)")
+        CheckLine(true, "1. Launch ETS2 & click OK on \"Request to use advanced SDK features\"")
+        CheckLine(true, "2. Run [F] Firewall in start.bat (or enable Phone Hotspot / USB Tethering)")
         CheckLine(isConnected, "PC plugin found")
         CheckLine(isConnected && packetsPerSec > 0, "Streaming controls ($packetsPerSec pps)")
 

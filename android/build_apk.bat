@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo =========================================================
@@ -7,25 +7,46 @@ echo   ETS2 Phone Controller - Android APK Build ^& Install
 echo =========================================================
 echo.
 
-REM Set Java Home to Android Studio's bundled JBR or installed JDK
-if exist "C:\Program Files\Android\Android Studio\jbr" (
-    set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
-) else if exist "C:\Program Files\Java\jdk-25" (
-    set "JAVA_HOME=C:\Program Files\Java\jdk-25"
-) else if exist "C:\Program Files\Java\jdk-21" (
-    set "JAVA_HOME=C:\Program Files\Java\jdk-21"
-) else if exist "C:\Program Files\Java\jdk-17" (
-    set "JAVA_HOME=C:\Program Files\Java\jdk-17"
+REM Auto-detect JDK (Android Studio JBR, Microsoft/Adoptium/Oracle JDK)
+if not defined JAVA_HOME (
+    for %%D in (
+        "C:\Program Files\Android\Android Studio\jbr"
+        "C:\Program Files\Java\jdk-25"
+        "C:\Program Files\Java\jdk-21"
+        "C:\Program Files\Java\jdk-17"
+    ) do (
+        if exist "%%~D\bin\java.exe" if not defined JAVA_HOME set "JAVA_HOME=%%~D"
+    )
+)
+if not defined JAVA_HOME (
+    for /f "delims=" %%P in ('dir /b /ad "C:\Program Files\Eclipse Adoptium\jdk-*" "C:\Program Files\Microsoft\jdk-*" 2^>nul') do (
+        if exist "C:\Program Files\Eclipse Adoptium\%%P\bin\java.exe" if not defined JAVA_HOME set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\%%P"
+        if exist "C:\Program Files\Microsoft\%%P\bin\java.exe" if not defined JAVA_HOME set "JAVA_HOME=C:\Program Files\Microsoft\%%P"
+    )
 )
 
-REM Set Android SDK (checks C:\android_sdk and default AppData location)
-if exist "C:\android_sdk" (
-    set "ANDROID_HOME=C:\android_sdk"
-) else if exist "%LOCALAPPDATA%\Android\Sdk" (
-    set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
+REM Auto-detect Android SDK
+if not defined ANDROID_HOME (
+    if exist "%LOCALAPPDATA%\Android\Sdk" (
+        set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
+    ) else if exist "C:\android_sdk" (
+        set "ANDROID_HOME=C:\android_sdk"
+    ) else if exist "%USERPROFILE%\Android\Sdk" (
+        set "ANDROID_HOME=%USERPROFILE%\Android\Sdk"
+    )
 )
 
-echo Using JAVA_HOME: %JAVA_HOME%
+if not defined ANDROID_HOME (
+    echo [ERROR] Android SDK not found! Install Android Studio or download the
+    echo         ready-made APK via start.bat [B] instead of compiling locally.
+    exit /b 1
+)
+
+if not exist "local.properties" (
+    powershell -NoProfile -Command "$p = '%ANDROID_HOME%'.Replace('\','\\'); Set-Content -Path 'local.properties' -Value ('sdk.dir=' + $p) -Encoding ASCII"
+)
+
+if defined JAVA_HOME echo Using JAVA_HOME   : %JAVA_HOME%
 echo Using ANDROID_HOME: %ANDROID_HOME%
 echo.
 
@@ -34,7 +55,6 @@ call gradlew.bat assembleDebug
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed! Check the Gradle output above.
-    pause
     exit /b 1
 )
 
@@ -45,19 +65,23 @@ echo   Location: app\build\outputs\apk\debug\app-debug.apk
 echo =========================================================
 echo.
 
-REM Automatically install onto connected phone if ADB is available
-if exist "%ANDROID_HOME%\platform-tools\adb.exe" (
-    echo Installing updated APK onto connected phone...
-    "%ANDROID_HOME%\platform-tools\adb.exe" install -r -d "app\build\outputs\apk\debug\app-debug.apk"
-) else (
-    where adb >nul 2>nul
-    if %errorlevel%==0 (
-        echo Installing updated APK onto connected phone...
-        adb install -r -d "app\build\outputs\apk\debug\app-debug.apk"
-    ) else (
-        echo [INFO] Copy app\build\outputs\apk\debug\app-debug.apk to your phone to install.
-    )
+set "ADB_EXE="
+if exist "%ANDROID_HOME%\platform-tools\adb.exe" set "ADB_EXE=%ANDROID_HOME%\platform-tools\adb.exe"
+if not defined ADB_EXE (
+    for /f "delims=" %%A in ('where adb 2^>nul') do if not defined ADB_EXE set "ADB_EXE=%%A"
 )
 
-echo.
-pause
+if defined ADB_EXE (
+    "%ADB_EXE%" devices 2>nul | findstr /R /C:"device$" >nul
+    if not errorlevel 1 (
+        echo Installing updated APK onto connected phone...
+        "%ADB_EXE%" install -r -d "app\build\outputs\apk\debug\app-debug.apk"
+        "%ADB_EXE%" shell monkey -p com.ets2controller -c android.intent.category.LAUNCHER 1 >nul 2>&1
+    ) else (
+        echo [INFO] No USB ADB phone detected. APK built at app\build\outputs\apk\debug\app-debug.apk
+    )
+) else (
+    echo [INFO] Copy app\build\outputs\apk\debug\app-debug.apk to your phone to install.
+)
+
+exit /b 0

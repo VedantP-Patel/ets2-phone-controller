@@ -5,6 +5,7 @@ build/
 android/build/
 android/app/build/
 *.apk
+ets2-phone-controller.apk
 *.aab
 local.properties
 .idea/
@@ -15,6 +16,7 @@ captures/
 
 # PC Host & Build Artifacts
 pc/ets2-controller.exe
+pc/ets2_path.txt
 *.o
 *.obj
 pc/*.pdb

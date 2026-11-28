@@ -512,7 +512,7 @@ void networkWorker() {
         sockaddr_in tcpAddr{};
         tcpAddr.sin_family = AF_INET;
         tcpAddr.sin_port = htons(PORT_CONTROL);
-        tcpAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        tcpAddr.sin_addr.s_addr = htonl(INADDR_ANY);
         if (bind(tcpListenSock, reinterpret_cast<sockaddr*>(&tcpAddr), sizeof(tcpAddr)) == SOCKET_ERROR ||
             listen(tcpListenSock, 2) == SOCKET_ERROR) {
             closesocket(tcpListenSock);
@@ -522,8 +522,8 @@ void networkWorker() {
 
     {
         char okBuf[128];
-        std::snprintf(okBuf, sizeof(okBuf), "[ETS2Phone] Listening on UDP %u (and local TCP loopback %s).",
-                      PORT_CONTROL, tcpListenSock != INVALID_SOCKET ? "active" : "unavailable");
+        std::snprintf(okBuf, sizeof(okBuf), "[ETS2Phone] Listening on UDP %u (and TCP port %u %s).",
+                      PORT_CONTROL, PORT_CONTROL, tcpListenSock != INVALID_SOCKET ? "active" : "unavailable");
         logInfo(okBuf);
     }
 
@@ -567,7 +567,7 @@ void networkWorker() {
                     setsockopt(tcpClientSock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
                     ioctlsocket(tcpClientSock, FIONBIO, &nonBlocking);
                     hasSeq = false;
-                    logInfo("[ETS2Phone] USB ADB TCP client connected on loopback.");
+                    logInfo("[ETS2Phone] TCP client connected on port 5005.");
                 }
             }
 

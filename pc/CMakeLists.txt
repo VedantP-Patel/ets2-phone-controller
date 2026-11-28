@@ -15,7 +15,8 @@ target_include_directories(ets2_phone_plugin PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(ets2_phone_plugin PRIVATE /O2 /W4 /DNDEBUG)
+    set_property(TARGET ets2_phone_plugin PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_options(ets2_phone_plugin PRIVATE /O2 /W4 /MT /DNDEBUG)
     target_link_options(ets2_phone_plugin PRIVATE /EXPORT:scs_input_init /EXPORT:scs_input_shutdown /EXPORT:scs_telemetry_init /EXPORT:scs_telemetry_shutdown)
 else()
     target_compile_options(ets2_phone_plugin PRIVATE -O2 -Wall -Wextra -DNDEBUG)
