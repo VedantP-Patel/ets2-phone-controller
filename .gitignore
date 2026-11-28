@@ -1,5 +1,6 @@
 # Android & Gradle
 .gradle/
+.kotlin/
 build/
 */build/
 android/build/
@@ -14,19 +15,41 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# PC Host & Build Artifacts
+# PC Native Build & Local Overrides
+pc/build/
+pc/build-*/
+pc/cmake-build-*/
 pc/ets2-controller.exe
 pc/ets2_path.txt
+*.exe
+*.dll
+*.lib
+*.exp
+*.ilk
+*.pdb
 *.o
 *.obj
-pc/*.pdb
-pc/build/
+
+# GitHub CI Staging & Bundles
+dist/
+release-assets/
+artifacts/
+portable/
+*.zip
+
+# Crash Dumps, Logs & Backups
+**/hs_err_pid*.log
+**/replay_pid*.log
 pc/test_log*.txt
 *.log
+*.bak
+*.tmp
 
-# OS & Editor metadata
+# OS & Editor Metadata
 .DS_Store
 Thumbs.db
 .vscode/
 *.swp
+*.user
+*.suo
 *~

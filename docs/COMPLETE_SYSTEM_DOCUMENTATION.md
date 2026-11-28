@@ -1,440 +1,228 @@
-# ETS2 Phone Controller — Complete Technical Compendium & Master Research Documentation
+# ETS2 Phone Controller — Complete Technical Architecture & System Reference (V3)
 
 > [!NOTE]
-> This master document provides the exhaustive technical reference, kinematic sensor research, architectural blueprints, communication protocol specifications, and operational walkthroughs for the **ETS2 Phone Controller System**.
+> This technical compendium documents the **V3 Native SCS SDK architecture**, inertial steering kinematics, `0x4532`/`0x4533`/`0x4534` UDP + TCP protocol, `controls.sii` auto-binding engine, GitHub Actions release pipeline, and diagnostics for **ETS2 Phone Controller**.
 
 ---
 
 ## Table of Contents
-1. [Executive Summary & System Architecture](#1-executive-summary--system-architecture)
-2. [Deep Kinematic Research: The Xiaomi Virtual Gyroscope Challenge](#2-deep-kinematic-research-the-xiaomi-virtual-gyroscope-challenge)
-3. [Dual-Anchor Inertial Fusion & Zero-Deflection Steering Engine](#3-dual-anchor-inertial-fusion--zero-deflection-steering-engine)
-4. [Transmission Engineering: Scania 12+2 Opticruise & Crawler Gears](#4-transmission-engineering-scania-122-opticruise--crawler-gears)
-5. [Tachometer Physics: Authentic Diesel RPM Banding](#5-tachometer-physics-authentic-diesel-rpm-banding)
-6. [Dual-Dispatch Input Pipeline: ViGEm Kernel Driver + DirectInput](#6-dual-dispatch-input-pipeline-vigem-kernel-driver--directinput)
-7. [ETS2 Profile Configuration Engine (`controls.sii`) & The "Joy: missing" Bug](#7-ets2-profile-configuration-engine-controlssii--the-joy-missing-bug)
-8. [Binary UDP Communication Protocol Specification](#8-binary-udp-communication-protocol-specification)
-9. [End-to-End Build, Deployment & Verification Walkthrough](#9-end-to-end-build-deployment--verification-walkthrough)
-10. [Comprehensive Troubleshooting Matrix & Diagnostics](#10-comprehensive-troubleshooting-matrix--diagnostics)
+1. [Executive Summary & V3 System Architecture](#1-executive-summary--v3-system-architecture)
+2. [Inertial Fusion & Zero-Deflection Steering Engine](#2-inertial-fusion--zero-deflection-steering-engine)
+3. [Transmission (`displayed_gear`), Opticruise & Tachometer Physics](#3-transmission-displayed_gear-opticruise--tachometer-physics)
+4. [Native SCS Input + Telemetry Plugin (`ets2_phone_plugin.dll`)](#4-native-scs-input--telemetry-plugin-ets2_phone_plugindll)
+5. [ETS2 Profile Auto-Binding (`controls.sii`) & Steam Cloud Support](#5-ets2-profile-auto-binding-controlssii--steam-cloud-support)
+6. [Binary Protocol Specification (`0x4532`, `0x4533`, `0x4534`)](#6-binary-protocol-specification-0x4532-0x4533-0x4534)
+7. [Android Cockpit, Editable Quick Dock, Orientation Lock & Radio](#7-android-cockpit-editable-quick-dock-orientation-lock--radio)
+8. [Turnkey Distribution: GitHub Actions Releases, Wi-Fi APK & Firewall](#8-turnkey-distribution-github-actions-releases-wi-fi-apk--firewall)
+9. [Manual Build & Verification Commands](#9-manual-build--verification-commands)
+10. [Troubleshooting Matrix & Diagnostics](#10-troubleshooting-matrix--diagnostics)
 
 ---
 
-## 1. Executive Summary & System Architecture
+## 1. Executive Summary & V3 System Architecture
 
-The **ETS2 Phone Controller** transforms an Android smartphone into an ultra-low-latency, force-feedback-enabled heavy truck steering wheel and dashboard cockpit for *Euro Truck Simulator 2* (ETS2) and *American Truck Simulator* (ATS).
+**ETS2 Phone Controller** turns an Android phone into a responsive heavy-truck steering wheel, analog pedal set (Gas, Brake, Clutch), button box (64 buttons + customizable Quick Dock), live cab radio browser, and telemetry dashboard for *Euro Truck Simulator 2*.
+
+Unlike V1 virtual-gamepad wrappers (ViGEmBus), the **V3 system runs directly inside `eurotrucks2.exe`** as a native C++20 SCS SDK plugin ([`ets2_phone_plugin.cpp`](../pc/src/ets2_phone_plugin.cpp)), eliminating external kernel drivers while exposing exact game telemetry and 64 independent input channels.
 
 ```mermaid
 flowchart TD
-    subgraph Android_Phone["Android Smartphone (Redmi 13 5G)"]
-        IMU["IMU Sensors (Rotation Vector + Gravity)"]
+    subgraph Android_Phone["Android App (Jetpack Compose)"]
+        IMU["IMU Sensors (Rotation Vector / Accelerometer / Gravity)"]
         SM["SteeringManager.kt (Dual-Anchor Fusion + 1-Euro Filter)"]
-        UI["Jetpack Compose UI (DashboardGauges.kt)"]
-        HR["HapticReceiver.kt (Audio + Vibration + Telemetry)"]
-        UDP_Client["UDP Socket Client (Port 5005 / Port 5006)"]
-        
+        UI["DCockpit / QuickDock / DTuning / RadioAndNavOverlays"]
+        Audio["CockpitAudioSynthesizer + RadioStreamPlayer"]
+        Net["UdpCockpitClient.kt (UDP 5005/5006 + LAN/ADB TCP 5005)"]
+
         IMU --> SM
-        SM --> UDP_Client
-        UI --> UDP_Client
-        UDP_Client --> HR
-        HR --> UI
+        SM --> Net
+        UI --> Net
+        Net --> Audio
+        Net --> UI
     end
 
-    subgraph Network["Low-Latency Transport"]
-        Wi-Fi["UDP Wi-Fi Direct / Local Subnet (~10ms)"]
-        USB["ADB Reverse Port Forwarding tcp:4242 / tcp:5005 (<1ms)"]
+    subgraph Transport["Low-Latency Transport"]
+        WIFI["Wi-Fi / Phone Hotspot / USB RNDIS (UDP 5005 + Beacon 5006)"]
+        TCP_FALL["Automatic LAN TCP Fallback (Port 5005, TCP_NODELAY)"]
+        ADB["USB Wired Mode (adb reverse tcp:5005 tcp:5005)"]
     end
 
-    subgraph Windows_PC["Windows PC Host Daemon (ets2-controller.exe)"]
-        UDP_Server["UDP Server (main.cpp @ 100Hz)"]
-        ViGEm["ViGEmBus Virtual Xbox 360 Controller (controller.cpp)"]
-        DI["DirectInput Hardware Scancode Injector (triggerScanCode)"]
-        TelemReader["SCS Telemetry Shared Memory Hook (telemetry_reader.cpp)"]
-        
-        UDP_Server --> ViGEm
-        UDP_Server --> DI
-        TelemReader --> UDP_Server
+    subgraph ETS2_Plugin["Native ETS2 Plugin (ets2_phone_plugin.dll)"]
+        NET_WORKER["networkWorker + beaconWorker (ETS2_COCKPIT_V3)"]
+        SCS_IN["scs_input_init (6 Analog Axes + 64 Digital Buttons)"]
+        SCS_TEL["scs_telemetry_init (Speed, RPM, displayed_gear, Fuel, Wheel/Surface Haptics)"]
+        UI_INJ["Foreground-Gated Win32 SendInput (Trailer Delivery & UI Menu D-Pad)"]
+        SII_RADIO["live_streams.sii Parser (Stations Synced Over 0x4534)"]
+
+        NET_WORKER --> SCS_IN
+        NET_WORKER --> UI_INJ
+        SCS_TEL --> NET_WORKER
+        SII_RADIO --> NET_WORKER
     end
 
-    subgraph Game["Euro Truck Simulator 2 (eurotrucks2.exe)"]
-        XInput["XInput Subsystem (Steering, Pedals, Bumpers)"]
-        DirectInput["DirectInput Keyboard Queue (Shift, Ctrl, E, C, P, [ ])"]
-        SCS_SDK["SCS Telemetry SDK (Local\\SCSTelemetry Shared Memory)"]
-        
-        ViGEm ==> XInput
-        DI ==> DirectInput
-        SCS_SDK ==> TelemReader
-    end
-
-    UDP_Client <==> Network <==> UDP_Server
+    Net <==> Transport <==> NET_WORKER
 ```
 
 ### Core Specifications
-* **Control Input Rate:** 100 Hz (10 ms hardware interval, zero rendering hitching via dedicated `HandlerThread`).
-* **Telemetry Streaming Rate:** 20 Hz (50 ms interval, streaming 32-byte binary datagrams).
-* **Transport Protocol:** UDP with XOR checksum validation and RTT ping roundtrip tracking.
-* **Driver Emulation:** Microsoft Xbox 360 controller via kernel IOCTL (`vigem_bus.sys`).
-* **DirectInput Injection:** Hardware scan codes with $wVk = 0$ for compatibility with DirectX exclusive message pumps.
+| Spec | Value |
+|:---|:---|
+| **Control Uplink** | `29 bytes` @ 100 Hz (`0x4532` v3, 6 analog axes + 64-bit button mask + XOR) |
+| **Telemetry & Haptics Downlink** | `47 bytes` @ 40 Hz (`0x4532` v3, speed, RPM, `displayed_gear`, temps, G-force, wheel/bump rumble + XOR) |
+| **UI Navigation / Delivery** | `5 bytes` (`0x4533`, foreground-gated `SendInput` for `eurotrucks2.exe`) |
+| **Cab Radio Sync** | `0x4534` framed packets parsed from ETS2 `live_streams.sii` |
+| **Auto-Discovery** | `ETS2_COCKPIT_V3` UDP broadcast on port `5006` across active PC adapters |
+| **Transport Modes** | UDP `5005`, automatic LAN TCP fallback on `5005`, or USB ADB `127.0.0.1:5005` |
 
 ---
 
-## 2. Deep Kinematic Research: The Xiaomi Virtual Gyroscope Challenge
+## 2. Inertial Fusion & Zero-Deflection Steering Engine
 
-### 2.1 Hardware Reality
-Hardware analysis via Android `dumpsys sensorservice` revealed that the target device (**Xiaomi Redmi 13 5G**, hardware identifier `35fbb9da`) **lacks a dedicated physical MEMS rate-gyroscope IC** (such as an InvenSense MPU-6050 or Bosch BMI160). Instead, Android exposes:
+Devices lacking a dedicated hardware MEMS rate gyroscope (e.g., Xiaomi phones using `virtual_gyroscope` synthesized from accelerometer differentiation) can suffer severe drift or $\pm 180^\circ$ wrap-around runaway under pitch tilt.
 
-```text
-Sensor: virtual_gyroscope | Xiaomi | ver: 1 | type: android.sensor.gyroscope
-Underlying Hardware: Bosch Sensortec BMA2x2 3-axis Accelerometer
-```
-
-The vendor HAL synthesizes angular rate vectors by differentiating linear acceleration vectors over time:
-$$\vec{\omega}_{\text{synthetic}} = \frac{d\vec{a}}{dt} \times \vec{r}_{\text{lever}}$$
-
-### 2.2 The Root Causes of Steering Runaway & Hysteresis
-1. **Mathematical Singularity on Pitch Tilt:**
-   In the legacy unwrapping algorithm:
-   ```kotlin
-   var delta = currentFrameAngle - prevRawAngle
-   while (delta > 180.0f) delta -= 360.0f
-   while (delta < -180.0f) delta += 360.0f
-   continuousAngle += delta
-   ```
-   When the user held the phone in landscape with a natural forward tilt ($30^\circ - 45^\circ$ pitch), normal hand trembles caused the quaternion scalar component $r_w$ to periodically cross the zero threshold. The relative twist angle jumped from $+179^\circ$ to $-179^\circ$, triggering the modulo unwrapper to add $+360^\circ$ repeatedly.
-   Consequently, `continuousAngle` pegged at $> +720^\circ$ (full right lock). When returning the phone to the physical horizontal center, the angle only dropped to $+675^\circ$, which was still hard-clamped at $+1.0$ (100% full right). **To the driver, the wheel appeared to keep turning in the same direction!**
-
-2. **Sign Inversion in Gravity Bleed:**
-   The legacy drift bleed formula calculated:
-   $$\theta_{\text{bleed}} = \text{atan2}(-g_y, -g_x)$$
-   When the phone was pitch-tilted, the sign of $-g_x$ flipped, inverting the correction vector and actively driving `driftOffset` away from center rather than toward it.
+[`SteeringManager.kt`](../android/app/src/main/java/com/ets2controller/sensor/SteeringManager.kt) solves this cleanly using:
+1. **Hemisphere Canonicalization + Relative Quaternion:** Computes $q_{\text{rel}} = q_{\text{base}}^{-1} \otimes q_{\text{curr}}$ (flipping sign if $q_b \cdot q_c < 0$) and extracts planar twist $\theta_{\text{twist}} = 2 \cdot \text{atan2}(r_z, r_w)$ wrapped to $[-180^\circ, +180^\circ]$.
+2. **Absolute Gravity In-Plane Anchor:** Computes $\theta_{\text{grav}} = \text{atan2}(-g_y, \sqrt{g_x^2 + g_z^2}) - \theta_{\text{base,grav}}$ so horizontal rest always resolves strictly to $0.000^\circ$. Notice both standard and reverse landscape steering respond symmetrically because `-wz` and calibrated roll are used directly.
+3. **Asymptotic Drift Bleed + Acoustic Decoupling:** Gently bleeds twist error toward gravity truth ($\delta_{\max} = 0.3^\circ/\text{s}$) only when quasi-static and while phone vibration feedback is idle.
+4. **1-Euro Adaptive Low-Pass Filter ([`OneEuroFilter.kt`](../android/app/src/main/java/com/ets2controller/sensor/OneEuroFilter.kt)):** Suppresses micro-jitter when driving straight while cutting lag during sharp turns.
+5. **Progressive / Speed-Sensitive Steering Curve & $C^2$ Quintic Deadband:** Smooth deadzone entry/exit with configurable wheel rotation (`540°–1080°`). Also supports **Touch Pad** and **Slide Strip** steering modes in the top bar.
 
 ---
 
-## 3. Dual-Anchor Inertial Fusion & Zero-Deflection Steering Engine
+## 3. Transmission (`displayed_gear`), Opticruise & Tachometer Physics
 
-To permanently resolve the virtual gyroscope limitations without requiring hardware modification, the steering pipeline was redesigned in [`SteeringManager.kt`](file:///d:/Projects/ets2-phone-controller/android/app/src/main/java/com/ets2controller/sensor/SteeringManager.kt).
-
-### 3.1 Mathematical Formulation
-
-```mermaid
-flowchart LR
-    A["Raw Quat [w,x,y,z]"] --> B["Hemisphere Canonicalization"]
-    B --> C["Relative Quat: q_rel = q_base^-1 * q_curr"]
-    C --> D["Twist Angle: 2*atan2(rz, rw)"]
-    D --> E["Modulo Wrap [-180°, +180°]"]
-    
-    G["Gravity Vector [gx, gy, gz]"] --> H["Landscape Tilt: atan2(-gy, sqrt(gx²+gz²))"]
-    H --> I["Gravity Angle Reference"]
-    
-    E --> J{"Angular Speed < 2.0°/s?"}
-    I --> J
-    J -- "Yes (Near Center)" --> K["Target = Gravity Ground Truth"]
-    J -- "No (Dynamic Turn)" --> L["Target = Dynamic Twist Angle"]
-    
-    K --> M["1-Euro Adaptive Filter"]
-    L --> M
-    M --> N["Speed-Sensitive Steering Curve"]
-    N --> O["Normalized Steering [-1.0, +1.0]"]
-```
-
-#### Step 1: Quaternion Relative Rotation & Hemisphere Canonicalization
-Given calibration quaternion $q_b = (b_w, b_x, b_y, b_z)$ and instantaneous frame quaternion $q_c = (c_w, c_x, c_y, c_z)$:
-$$q_c \leftarrow -q_c \quad \text{if} \quad (q_b \cdot q_c) < 0$$
-The relative rotation is computed via Hamilton product:
-$$q_{\text{rel}} = q_b^{-1} \otimes q_c$$
-$$r_w = b_w c_w + b_x c_x + b_y c_y + b_z c_z$$
-$$r_z = b_w c_z - b_x c_y + b_y c_x - b_z c_w$$
-
-#### Step 2: Planar Twist Extraction
-$$\theta_{\text{twist}} = 2 \cdot \text{atan2}(r_z, r_w)$$
-Bounded strictly to $[-180^\circ, +180^\circ]$:
-$$\theta_{\text{frame}} = -\left(\left(\theta_{\text{twist}} + 180^\circ \pmod{360^\circ}\right) - 180^\circ\right)$$
-
-#### Step 3: Absolute Physical Gravity In-Plane Reference
-In landscape orientation (display rotation $90^\circ$), Earth's gravitational acceleration $\vec{g} = (g_x, g_y, g_z)$ decomposes into:
-* Lateral steering tilt: $-g_y$
-* Vertical and pitch magnitude: $\sqrt{g_x^2 + g_z^2}$
-$$\theta_{\text{grav}} = \text{atan2}\left(-g_y, \sqrt{g_x^2 + g_z^2}\right) - \theta_{\text{base,grav}}$$
-
-Because gravity is an absolute invariant physical field, **$\theta_{\text{grav}}$ is mathematically guaranteed to equal $0.000^\circ$ whenever the phone is returned to its resting horizontal plane**, completely immune to virtual gyroscope drift.
-
-#### Step 4: Continuous Asymptotic Drift Bleed & Acoustic Decoupling
-To eliminate bang-bang limit-cycle chatter and step discontinuities, a continuous asymptotic drift integrator is used:
-$$\text{driftOffset} \leftarrow \text{driftOffset} + \Delta t \cdot \text{clamp}\left(\theta_{\text{grav}} - (\theta_{\text{twist}} + \text{driftOffset}), -\delta_{\max}, +\delta_{\max}\right)$$
-* Active only when quasi-static ($\omega < 1.0^\circ/\text{s}$) and phone haptic vibration is inactive (`isHapticVibrating == false`).
-* Maximum drift rate is capped at $\delta_{\max} = 0.3^\circ/\text{s}$ ($0.003^\circ$ per 10ms frame), ensuring continuous mathematical smoothness with zero step jumps.
-* Fused orientation:
-$$\theta_{\text{target}} = \theta_{\text{twist}} + \text{driftOffset}$$
-
-#### Step 5: High-Responsiveness 1-Euro Adaptive Low-Pass Filter
-To prevent sensor noise from shaking the truck at high speed while maintaining sub-8ms phase lag during fast counter-steering:
-$$f_c = f_{c,\min} + \beta \cdot |\dot{x}|$$
-$$\alpha = \frac{1}{1 + \frac{1}{2\pi \cdot f_c \cdot \Delta t}}$$
-$$x_{\text{filtered}} = \alpha \cdot x + (1 - \alpha) \cdot x_{\text{prev}}$$
-* Optimized Parameters: $f_{c,\min} = 0.6\text{ Hz}$, $\beta = 0.008$, sampling rate $= 100\text{ Hz}$. Cutoff clamped to $[f_{c,\min}, 12.0\text{ Hz}]$. Monotonic $\Delta t$ clamped to $[0.002\text{ s}, 0.05\text{ s}]$.
-
-#### Step 6: C² Continuous Quintic Smoothstep Deadband Transition
-At the deadzone boundary, linear subtraction causes a discontinuous 1st derivative. The system applies a quintic smoothstep function:
-$$S(u) = 6u^5 - 15u^4 + 10u^3, \quad u = \frac{|\theta| - \text{deadzone}}{1.0^\circ} \in [0, 1]$$
-$$S'(0) = 0, \quad S''(0) = 0, \quad S'(1) = 0, \quad S''(1) = 0$$
-This provides a mathematically $C^2$ continuous transition without any twitch or corner when exiting or entering center.
+- **Coasting Fix (`displayed_gear`):** [`ets2_phone_plugin.cpp`](../pc/src/ets2_phone_plugin.cpp) subscribes to `SCS_TELEMETRY_TRUCK_CHANNEL_displayed_gear` (and `SCS_TELEMETRY_CONFIG_controls` `"shifter.type"`) rather than raw `engine_gear`, ensuring Simple Automatic transmissions hold the engaged dashboard gear (`D1..D12` / `C1..C2` / `R`) when lifting off the throttle instead of flashing `N`.
+- **Crawler + Opticruise Mapping ([`DashboardGauges.kt`](../android/app/src/main/java/com/ets2controller/ui/DashboardGauges.kt)):** Distinguishes 14+ speed heavy haulers (`C1`, `C2`, road gears `1–12`) from 12-speed boxes and displays `A/D` vs `M` prefixes dynamically.
+- **Diesel RPM Banding:** Maps RPM against green eco torque ($0–1500$ RPM), amber braking/power ($1500–2100$ RPM), and redline ($>2100$ RPM) without full-gradient squeezing bugs.
 
 ---
 
-## 4. Transmission Engineering: Scania 12+2 Opticruise & Crawler Gears
+## 4. Native SCS Input + Telemetry Plugin (`ets2_phone_plugin.dll`)
 
-### 4.1 Heavy Commercial Gearbox Topology
-Heavy commercial haulers (e.g., the **Scania R 730 Streamline V8**) operate with a **12+2 Opticruise transmission** (14 forward gear ratios):
-* **$C1$ (Crawler 1):** Ultra-low reduction ratio ($> 16.4:1$) for starting 60-ton heavy cargo on steep inclines.
-* **$C2$ (Crawler 2):** Low reduction ratio ($~13.2:1$).
-* **Road Gears $1 - 12$ ($A1 - A12$ in Auto, $M1 - M12$ in Manual):** Standard highway cruising ratios.
-* **$R1 - R2$:** Low and high reverse ratios.
-
-```
-Physical Index (SCS SDK):  -2   -1    0     1     2     3     4     5   ...   14
-Cockpit Display:           R2   R1    N    C1    C2    A1    A2    A3   ...  A12
-```
-
-### 4.2 Shared Memory Extraction & Network Encoding
-In [`telemetry_reader.cpp`](file:///d:/Projects/ets2-phone-controller/pc/src/telemetry_reader.cpp):
-```cpp
-// Extract total forward gears and shifter configuration from SCS SDK
-outPacket->forwardGears = (map->config_ui.gears > 0) ? static_cast<uint8_t>(map->config_ui.gears) : 14;
-
-bool isAuto = true;
-if (map->config_s.shifterType[0] != '\0') {
-    std::string sType(map->config_s.shifterType);
-    if (sType.find("manual") != std::string::npos || sType.find("hshifter") != std::string::npos) {
-        isAuto = false;
-    }
-}
-outPacket->shifterFlags = isAuto ? 1 : 0;
-```
-
-In [`DashboardGauges.kt`](file:///d:/Projects/ets2-phone-controller/android/app/src/main/java/com/ets2controller/ui/DashboardGauges.kt):
-```kotlin
-val totalFwdGears = telemetry.forwardGears.let { if (it > 0) it else 14 }
-val isAuto = telemetry.isAutomatic
-val gear = telemetry.gear
-
-val gearText = when {
-    gear == 0 -> "N"
-    gear == -1 -> "R1"
-    gear == -2 -> "R2"
-    gear < 0 -> "R${-gear}"
-    totalFwdGears > 12 -> {
-        when (gear) {
-            1 -> "C1"
-            2 -> "C2"
-            else -> {
-                val roadGear = gear - 2
-                if (isAuto) "A$roadGear" else "M$roadGear"
-            }
-        }
-    }
-    else -> if (isAuto) "A$gear" else "M$gear"
-}
-```
+Compiled as a 64-bit native Windows DLL deployed to `<ETS2>\bin\win_x64\plugins\ets2_phone_plugin.dll`:
+- **Device Identity:** Registers SCS input device `ets2_phone_cockpit` (`"ETS2 Phone Cockpit Controller"`) with **6 float axes** (`steering`, `throttle`, `brake`, `clutch`, `look_x`, `look_y`) and **64 boolean button channels** (`horn`, `engine_toggle`, ..., `radio_play_pause` [bit 60], `radio_vol_up` [bit 61], `radio_vol_down` [bit 62], `radio_fav` [bit 63]).
+- **Networking:**
+  - Opens a non-blocking UDP socket bound to `0.0.0.0:5005` AND a framed non-blocking TCP socket bound to `0.0.0.0:5005` (`TCP_NODELAY`), serving both ADB loopback (`127.0.0.1`) and LAN TCP fallback seamlessly.
+  - Broadcasts `ETS2_COCKPIT_V3` every second over each active non-loopback adapter on UDP port `5006`.
+  - Enforces a **350 ms deadman failsafe** (`zeroAllControls()`) if phone packets stop arriving.
+- **Foreground-Gated UI Navigation (`0x4533`):** `handleUiCommand()` verifies `GetForegroundWindow()` belongs to `eurotrucks2.exe` before injecting `SendInput` keystrokes (`Tab`, `Up/Down/Left/Right`, `Enter`, `Esc`) or calibrated 16:9 normalized cursor clicks for the 3 **TRAILER DELIVERY** options (`Where do you need it?`, `Let's play it safe`, `Skip`, and `Confirm`).
+- **Live Radio Parsing (`live_streams.sii`):** Searches `Documents`, `OneDrive\Documents`, and `%OneDrive%` for `Euro Truck Simulator 2\live_streams.sii`, decodes `\xHH` escapes, and streams station rows (`0x4534`) to the app on connect or on `UI_CMD_RADIO_LIST_REQ`.
 
 ---
 
-## 5. Tachometer Physics: Authentic Diesel RPM Banding
+## 5. ETS2 Profile Auto-Binding (`controls.sii`) & Steam Cloud Support
 
-### 5.1 Root Cause of the Permanent Redline Defect
-In the legacy Compose layout:
-```kotlin
-Box(
-    modifier = Modifier
-        .fillMaxWidth(animatedRpmRatio) // Width dynamically shrinks with RPM!
-        .fillMaxHeight()
-        .background(Brush.horizontalGradient(listOf(Green, Orange, Red)))
-)
-```
-`Brush.horizontalGradient` distributed colors across the *allocated Box width*. Because the Box width was scaled by `animatedRpmRatio`, the right edge of the bar always evaluated to $t = 1.0$ (Bright Red `0xFFFF3D00`), even at 600 RPM idle!
-
-### 5.2 Physics-Based Banding Solution
-Heavy diesel engines operate under distinct operational regimes:
-* **$0 - 1500$ RPM (Green Band):** Peak torque zone ($1000 - 1400$ RPM for Scania DC16 V8). Clean Diesel Eco Emerald Green (`0xFF00E676`).
-* **$1500 - 2100$ RPM (Amber Band):** Power band / engine braking range. Warning Orange (`0xFFFFA726`).
-* **$> 2100$ RPM (Red Band):** Redline over-rev zone. Danger Red (`0xFFFF3D00`).
-
-```kotlin
-val currentRpm = telemetry.engineRpm
-val rpmBarEndColor = when {
-    currentRpm > 2100f -> Color(0xFFFF3D00)
-    currentRpm > 1500f -> Color(0xFFFFA726)
-    else -> Color(0xFF00E676)
-}
-
-Box(
-    modifier = Modifier
-        .fillMaxWidth(animatedRpmRatio)
-        .fillMaxHeight()
-        .background(Brush.horizontalGradient(listOf(Color(0xFF00E676), rpmBarEndColor)))
-)
-```
+[`pc/scripts/auto_bind_ets2.ps1`](../pc/scripts/auto_bind_ets2.ps1) eliminates manual 70-channel binding inside ETS2:
+- **Multi-Location Discovery:** Scans `%USERPROFILE%\Documents`, `%USERPROFILE%\OneDrive\Documents`, localized `[Environment]::GetFolderPath('MyDocuments')`, AND **Steam Cloud profiles** under `<SteamPath>\userdata\*\227300\remote\`.
+- **Clean Slot Assignment:** Detects or claims the `device joy` / `joy2` slot for `sdk.ets2_phone_cockpit`, writes axis `c_jzthrottle`/`c_jzbrake` (`1.000000`) and zeroed steering deadzones, strips stale `joy.b*` tokens when `joy` is assigned, avoids binding collisions on `wipersback`/`motorbrake`, creates `.bak` backups, and writes **UTF-8 without BOM** so ETS2 parses `SiiNunit` cleanly.
+- **`-CheckOnly` Mode:** Used by `start.bat` to report accurate status across all profiles (returning `0` bound, `2` needs binding, or `3` no profile created yet).
 
 ---
 
-## 6. Dual-Dispatch Input Pipeline: ViGEm Kernel Driver + DirectInput
+## 6. Binary Protocol Specification (`0x4532`, `0x4533`, `0x4534`)
 
-To guarantee 100% responsiveness regardless of whether ETS2 is bound to keyboard or controller, every phone button triggers **simultaneous dual dispatch**.
+Defined identically in [`pc/src/protocol.h`](../pc/src/protocol.h) and [`UdpCockpitClient.kt`](../android/app/src/main/java/com/ets2controller/network/UdpCockpitClient.kt) (`#pragma pack(push, 1)` + `static_assert`).
 
-### 6.1 DirectInput Hardware Scan Code Correction
-Windows `SendInput` requires `wVk = 0` when `KEYEVENTF_SCANCODE` is used:
-```cpp
-void triggerScanCode(WORD scanCode, bool extended = false, int holdMs = 200) {
-    std::thread([scanCode, extended, holdMs]() {
-        INPUT ip[2] = {};
+### 6.1 PhoneControlPacket (`0x4532`, v3, `29 bytes`, Phone → PC @ 100 Hz)
+| Offset | Field | Type | Description |
+|:---|:---|:---|:---|
+| `0..1` | `magic` | `uint16_t` | `0x4532` (`"E2"`) |
+| `2` | `version` | `uint8_t` | `3` |
+| `3` | `flags` | `uint8_t` | `bit 0`: Coach Smooth Mode, `bit 1`: Look Autocenter, `bit 2`: Ping |
+| `4..5` | `sequenceId` | `uint16_t` | Rolling sequence counter |
+| `6..7` | `clientTimestampMs` | `uint16_t` | Echoed by PC for RTT ping |
+| `8..15` | `buttonMask` | `uint64_t` | Bits `0..63` representing 64 simultaneous buttons |
+| `16..17` | `steering` | `int16_t` | `-32767 .. +32767` |
+| `18..19` | `throttle` | `uint16_t` | `0 .. 65535` |
+| `20..21` | `brake` | `uint16_t` | `0 .. 65535` |
+| `22..23` | `clutch` | `uint16_t` | `0 .. 65535` |
+| `24..25` | `lookX` | `int16_t` | `-32767 .. +32767` |
+| `26..27` | `lookY` | `int16_t` | `-32767 .. +32767` |
+| `28` | `checksum` | `uint8_t` | XOR of bytes `0..27` |
 
-        // 1. Key Down (wVk must strictly be 0 for DirectInput/DirectX games)
-        ip[0].type = INPUT_KEYBOARD;
-        ip[0].ki.wVk = 0;
-        ip[0].ki.wScan = scanCode;
-        ip[0].ki.dwFlags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+### 6.2 TruckTelemetryPacket (`0x4532`, v3, `47 bytes`, PC → Phone @ 40 Hz)
+| Offset | Field | Type | Description |
+|:---|:---|:---|:---|
+| `0..1` | `magic` | `uint16_t` | `0x4532` |
+| `2` | `version` | `uint8_t` | `3` |
+| `3` | `safetyFlags` | `uint8_t` | Trailer connected, blind spots, collision, LKA, auto-shifter (`bit 5`), park lights |
+| `4..7` | `speedKmh` | `float` | Road speed (km/h) |
+| `8..11` | `engineRpm` | `float` | Engine RPM |
+| `12..15` | `maxRpm` | `float` | Engine redline RPM |
+| `16..19` | `airPressureBar` | `float` | Brake air pressure (bar) |
+| `20` | `gear` | `int8_t` | Displayed gear (`<0` reverse, `0` neutral, `>0` forward) |
+| `21` | `forwardGears` | `uint8_t` | Total forward gears |
+| `22..28` | Percentages & levels | `uint8_t[7]` | `fuelPercent`, `adbluePercent`, `speedLimitKmh`, `cruiseSpeedKmh`, `truckDamagePct`, `retarderLevel`, `accDistanceLevel` |
+| `29..30` | `lateralG100`, `longitudinalG100` | `int8_t[2]` | G-forces $\times 100$ |
+| `31..32` | `rumbleLarge`, `rumbleSmall` | `uint8_t[2]` | Suspension bump & road-surface haptics (`0..255`) |
+| `33..34` | `dashboardFlags` | `uint16_t` | Blinkers, hazard, park brake, engine, low air, cruise, retarder, eng brake, low/high beam, beacon, wipers, diff lock, lift axles |
+| `35..36` | `routeDistanceKm` | `uint16_t` | Advisor distance remaining (km) |
+| `37..38` | `routeTimeMin` | `uint16_t` | Advisor ETA (min) |
+| `39..40` | `echoTimestampMs` | `uint16_t` | Echoed uplink timestamp |
+| `41..42` | `oilTempC` | `int16_t` | Oil temperature (°C) |
+| `43..44` | `waterTempC` | `int16_t` | Coolant temperature (°C) |
+| `45` | `batteryVolts10` | `uint8_t` | Battery voltage $\times 10$ |
+| `46` | `checksum` | `uint8_t` | XOR of bytes `0..45` |
 
-        // 2. Key Up
-        ip[1].type = INPUT_KEYBOARD;
-        ip[1].ki.wVk = 0;
-        ip[1].ki.wScan = scanCode;
-        ip[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-
-        // Dual dispatch: keybd_event with scan code + SendInput
-        keybd_event(0, (BYTE)scanCode, (extended ? KEYEVENTF_EXTENDEDKEY : 0), 0);
-        SendInput(1, &ip[0], sizeof(INPUT));
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
-
-        keybd_event(0, (BYTE)scanCode, KEYEVENTF_KEYUP | (extended ? KEYEVENTF_EXTENDEDKEY : 0), 0);
-        SendInput(1, &ip[1], sizeof(INPUT));
-    }).detach();
-}
-```
-
-### 6.2 Complete Dual-Dispatch Mapping Table
-
-| Cockpit Function | Phone Bit | DirectInput Scancode | DirectInput Key | ViGEm XInput Button | Hold / Pulse Timing |
-|---|---|---|---|---|---|
-| **Shift Up** | Bit 10 | `0x2A` | Left Shift | `XUSB_GAMEPAD_RIGHT_SHOULDER` (`Joy RB`) | 200 ms pulse |
-| **Shift Down** | Bit 11 | `0x1D` | Left Ctrl | `XUSB_GAMEPAD_LEFT_SHOULDER` (`Joy LB`) | 200 ms pulse |
-| **Shift Neutral** | Flags Bit 1 | `0x35` | Slash (`/`) | `XUSB_GAMEPAD_Y` (`Joy Y`) | 200 ms pulse |
-| **Engine Start/Stop** | Bit 1 | `0x12` | `E` | `XUSB_GAMEPAD_DPAD_RIGHT` (`pov1_right`) | 1200 ms hold |
-| **Cruise Control** | Bit 9 | `0x2E` | `C` | `XUSB_GAMEPAD_B` (`Joy B`) | 600 ms hold (No Start!) |
-| **Parking Brake** | Bit 6 | `0x39` | Space | `XUSB_GAMEPAD_DPAD_DOWN` (`pov1_down`) | 1000 ms hold |
-| **Wipers** | Bit 12 | `0x19` | `P` | `XUSB_GAMEPAD_DPAD_DOWN` (`pov1_down`) | 150 ms pulse |
-| **Hazard Flasher** | Bit 3 | `0x21` | `F` | `XUSB_GAMEPAD_BACK` (`Joy Back`) | 800 ms hold |
-| **Left Indicator** | Bit 4 | `0x1A` | `[` | `XUSB_GAMEPAD_DPAD_LEFT` (`pov1_left`) | 150 ms pulse |
-| **Right Indicator** | Bit 5 | `0x1B` | `]` | `XUSB_GAMEPAD_DPAD_RIGHT` (`pov1_right`) | 150 ms pulse |
-| **Horn** | Bit 0 | `0x23` | `H` | `XUSB_GAMEPAD_RIGHT_THUMB` (`Joy R3`) + `Joy A` | 180 ms pulse |
-| **Headlights** | Bit 2 | `0x26` | `L` | `XUSB_GAMEPAD_X` (`Joy X`) | 180 ms pulse |
-| **Camera View** | Bit 13 | `0x02` | `1` | `XUSB_GAMEPAD_DPAD_UP` (`pov1_up`) | 150 ms pulse |
-| **Differential Lock**| Flags Bit 2 | `0x2F` | `V` | — | 150 ms pulse |
-| **Lift / Drop Axle** | Flags Bit 3 | `0x16` | `U` | — | 150 ms pulse |
-| **Trailer Coupling** | Flags Bit 4 | `0x14` | `T` | — | 150 ms pulse |
+### 6.3 UI & Radio Packets (`0x4533` & `0x4534`)
+- **`UiCommandPacket` (`0x4533`, 5 bytes):** `[magic:2][cmd:1][arg:1][xor:1]`.
+- **`RadioRowHeader` (`0x4534`, 11 bytes + payload + 1-byte XOR):** `[magic:2][index:2][totalCount:2][flags:1][bitrate:2][payloadLen:2]` + UTF-8 `"name\tgenre\tcountry\turl"`.
 
 ---
 
-## 7. ETS2 Profile Configuration Engine (`controls.sii`) & The "Joy: missing" Bug
+## 7. Android Cockpit, Editable Quick Dock, Orientation Lock & Radio
 
-### 7.1 Anatomy of the "Joy: missing" Warning
-ETS2 evaluates button combinations defined in `controls.sii`. When a configuration line references custom modifier 1 (`cstm_mod_1`):
-```text
-config_lines[109]: "mix cstm_mod_1 `unbound?0 | joy.lb?0`"
-```
-ETS2 evaluates tokens left-to-right. Encountering `unbound?0` causes the UI parser to treat the primary modifier token as an unplugged or missing controller device. Every mix referencing `cstm_mod_1` (e.g. `modifier(cstm_mod_1, ...)`) rendered as:
-```text
-Joy: missing + Joy [right stick up]
-Joy: missing + Joy [right stick down]
-```
-
-### 7.2 The Profile Fix
-In both local and Steam Cloud profile files:
-* `C:\Users\Vedan\OneDrive\Documents\Euro Truck Simulator 2\profiles\4E616D654173526F636B\controls.sii`
-* `C:\Users\Vedan\OneDrive\Documents\Euro Truck Simulator 2\steam_profiles\506C61796572\controls.sii`
-
-```text
-config_lines[109]: "mix cstm_mod_1 `joy.lb?0`"
-config_lines[469]: "mix gearup `keyboard.lshift?0 | joy.rb?0 | semantical.gearup?0`"
-config_lines[470]: "mix geardown `keyboard.lctrl?0 | joy.lb?0 | semantical.geardown?0`"
-config_lines[471]: "mix gear0 `keyboard.slash?0 | joy.context4?0 | semantical.gear0?0`"
-```
-
-Result in ETS2 **Keys & Buttons** UI:
-* **Shift Up:** Primary `Shift`, Secondary `Joy RB`
-* **Shift Down:** Primary `Ctrl`, Secondary `Joy LB`
-* **Shift to Neutral:** Primary `/`, Secondary `Joy Y`
-* **Joy: missing warnings:** Completely eliminated.
+- **Orientation Lock ([`MainActivity.kt`](../android/app/src/main/java/com/ets2controller/MainActivity.kt), [`DTuning.kt`](../android/app/src/main/java/com/ets2controller/ui/DTuning.kt)):** Prevents unwanted 180° flips during heavy steering turns via **Tuning → Cockpit → SCREEN ORIENTATION** (`Lock L` default, `Lock R`, or `Auto`).
+- **Editable Quick Dock & Pin-to-Dock ([`QuickDock.kt`](../android/app/src/main/java/com/ets2controller/ui/QuickDock.kt), [`DPanels.kt`](../android/app/src/main/java/com/ets2controller/ui/DPanels.kt), [`SettingsRepository.kt`](../android/app/src/main/java/com/ets2controller/config/SettingsRepository.kt)):**
+  - Persistent 8-slot `quickDockBits` customized either inline via **Quick Dock → Edit** (`◀` / `▶` reorder + 2-column action picker + `Reset`) or via **More → Pin to Dock** (`#1–#8` slot badges + bottom bar).
+  - Live telemetry highlights for active controls (`isControlActive`).
+- **Cab Radio & Delivery Picker ([`RadioAndNavOverlays.kt`](../android/app/src/main/java/com/ets2controller/ui/RadioAndNavOverlays.kt), [`RadioStreamPlayer.kt`](../android/app/src/main/java/com/ets2controller/audio/RadioStreamPlayer.kt)):** Searchable ETS2 station browser supporting both in-game `ETS2 RADIO` volume/play/fav controls (without pausing ETS2) and direct `PHONE STREAM` HTTP playback.
+- **Animations & Resilience:** `AnimatedVisibility` + `Animatable` drag-to-close on Quick Dock, `AnimatedContent` tab transitions, and `LocalReduceMotion` support.
 
 ---
 
-## 8. Binary UDP Communication Protocol Specification
+## 8. Turnkey Distribution: GitHub Actions Releases, Wi-Fi APK & Firewall
 
-### 8.1 Controller State Packet (Phone $\to$ PC, 12 Bytes @ 100 Hz)
-| Byte Offset | Field Name | Data Type | Range / Description |
-|---|---|---|---|
-| `0 - 1` | `sequenceId` | `uint16_t` | Monotonically incrementing sequence identifier |
-| `2 - 3` | `buttons` | `uint16_t` | Bitmask: Bits 0..15 (Horn, Engine, Lights, Hazard, Blinkers, Gears...) |
-| `4 - 7` | `steering` | `float` (IEEE 754) | Bounded range: `[-1.0f, +1.0f]` (Left to Right) |
-| `8` | `throttle` | `uint8_t` | Normalized: `0 - 255` ($0.0 - 1.0$) |
-| `9` | `brake` | `uint8_t` | Normalized: `0 - 255` ($0.0 - 1.0$) |
-| `10` | `flags` | `uint8_t` | Bit 0: Prev Radio, Bit 1: Neutral, Bit 2: Diff Lock, Bit 3: Lift Axle, Bit 4: Trailer |
-| `11` | `checksum` | `uint8_t` | XOR checksum of bytes `0` through `10` |
-
-### 8.2 Truck Telemetry Packet (PC $\to$ Phone, 32 Bytes @ 20 Hz)
-| Byte Offset | Field Name | Data Type | Units / Description |
-|---|---|---|---|
-| `0` | `header` | `uint8_t` | Magic byte: `0xFC` |
-| `1 - 4` | `speedKmh` | `float` | Truck road speed in km/h |
-| `5 - 8` | `engineRpm` | `float` | Instantaneous engine revolutions per minute |
-| `9 - 12` | `maxRpm` | `float` | Tachometer redline limit (e.g. 2500 RPM) |
-| `13` | `gear` | `int8_t` | `-2` (R2), `-1` (R1), `0` (N), `1..14` (Forward) |
-| `14` | `fuelPercent` | `uint8_t` | Fuel tank capacity percentage (`0 - 100%`) |
-| `15 - 18` | `airPressureBar` | `float` | Brake pneumatic reservoir pressure (bar) |
-| `19` | `dashboardFlags` | `uint8_t` | Bit 0: Left Turn, Bit 1: Right Turn, Bit 2: Hazard, Bit 3: Park Brake, Bit 4: Engine Running, Bit 5: Low Air, Bit 6: Cruise Active |
-| `20 - 21` | `pingTimestamp` | `uint16_t` | Echoed `sequenceId` for RTT network ping calculation |
-| `22` | `speedLimitKmh` | `uint8_t` | Current road speed limit sign (km/h) |
-| `23 - 24` | `routeDistanceKm` | `uint16_t` | GPS distance to destination (km) |
-| `25 - 26` | `routeTimeMin` | `uint16_t` | GPS estimated time of arrival (minutes) |
-| `27` | `truckDamagePct` | `uint8_t` | Highest chassis/engine wear (`0 - 100%`) |
-| `28` | `cruiseSpeedKmh` | `uint8_t` | Target cruise control speed setpoint (km/h) |
-| `29` | `forwardGears` | `uint8_t` | Total forward ratios count ($14$ for Scania 12+2) |
-| `30` | `shifterFlags` | `uint8_t` | Bit 0: Automatic ($1$) / Manual ($0$) |
-| `31` | `checksum` | `uint8_t` | XOR checksum of bytes `0` through `30` |
+- **CI/CD Workflow ([`.github/workflows/release.yml`](../.github/workflows/release.yml)):** On pushes to `main` or `v*` tags, builds `ets2_phone_plugin.dll` (MSVC `/MT` static CRT + `dumpbin /exports` check), runs `.\gradlew testDebugUnitTest assembleDebug`, and publishes `ets2_phone_plugin.dll`, `ets2-phone-controller.apk`, and `ETS2-Phone-Controller-Portable.zip` under GitHub Releases (`latest`).
+- **Installer Launcher ([`start.bat`](../start.bat)):**
+  - Uses [`find_ets2.ps1`](../pc/scripts/find_ets2.ps1) (override `pc/ets2_path.txt`, Steam VDF, Uninstall registry, all fixed drives) + option `[P]` for custom folders.
+  - Auto-downloads `ets2_phone_plugin.dll` from GitHub Releases when no local C++ compiler is present.
+  - Option `[B]` installs via ADB or starts [`serve_apk_wifi.ps1`](../pc/scripts/serve_apk_wifi.ps1) on port `8099` so phones download the APK directly in Chrome without USB debugging or Android Studio.
+  - Option `[F]` creates `-Profile Any` firewall rules for UDP `5005/5006`, TCP `5005/8099`, and `eurotrucks2.exe` so **Public** Wi-Fi / Hotspots / USB RNDIS never block traffic.
 
 ---
 
-## 9. End-to-End Build, Deployment & Verification Walkthrough
+## 9. Manual Build & Verification Commands
 
-### 9.1 Building the PC Host Server
-From `d:\Projects\ets2-phone-controller\pc`:
-```powershell
-mingw32-make
-```
-* Compiles `ets2-controller.exe` statically linking ViGEmClient, Winsock2, and Iphlpapi.
-
-### 9.2 Building & Installing the Android APK
-From `d:\Projects\ets2-phone-controller\android`:
-```powershell
-.\gradlew assembleDebug
-adb -s 35fbb9da install -r app\build\outputs\apk\debug\app-debug.apk
-adb -s 35fbb9da shell am start -n com.ets2controller/.MainActivity
-```
-
-### 9.3 Running the System
-1. Launch ETS2.
-2. Run `d:\Projects\ets2-phone-controller\start.bat` (or `pc\ets2-controller.exe`).
-3. The server automatically detects your IP, plugs in the virtual controller, hooks into `Local\SCSTelemetry`, and begins streaming.
+- **PC Plugin (MinGW `g++` static build):**
+  ```powershell
+  g++ -O2 -Wall -Wextra -shared -static -static-libgcc -static-libstdc++ -std=c++20 -DNDEBUG `
+      -I"pc/src" -I"pc/include/scssdk" "pc/src/ets2_phone_plugin.cpp" `
+      -o "pc/build/ets2_phone_plugin.dll" -lws2_32 -liphlpapi -luser32
+  ```
+- **PC Plugin (CMake + MSVC `/MT`):**
+  ```powershell
+  cmake -S pc -B pc/build-cmake -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+  cmake --build pc/build-cmake --config Release
+  ```
+- **Android Unit Tests & APK Build:**
+  ```powershell
+  cd android
+  .\gradlew.bat testDebugUnitTest assembleDebug
+  ```
+- **Android On-Device Instrumentation Tests:**
+  ```powershell
+  cd android
+  .\gradlew.bat connectedDebugAndroidTest
+  ```
 
 ---
 
-## 10. Comprehensive Troubleshooting Matrix & Diagnostics
+## 10. Troubleshooting Matrix & Diagnostics
 
-| Symptom | Probable Cause | Verification & Remediation |
-|---|---|---|
-| **Steering feels stuck to one side** | Legacy delta accumulator pegged | Upgrade to latest build. Tap **CALIBRATE** on the phone dashboard while holding phone level. |
-| **Shift Up / Down does nothing** | ETS2 focus issue or unbound key | Check ETS2 Keys & Buttons. Confirm Primary shows `Shift` / `Ctrl` and Secondary shows `Joy RB` / `Joy LB`. |
-| **"Joy: missing" in ETS2 UI** | `unbound?0` token in `controls.sii` | Run `python pc/scripts/update_controls.py` to restore clean profile bindings. |
-| **RPM bar shows red at idle** | Relative gradient calculation bug | Fixed in latest APK build. Confirm `latest_screen_v8_rebuilt.png` shows pure green. |
-| **Crawler gears C1/C2 missing** | Truck using standard 12-speed box | Verify truck transmission in truck service shop. Ensure 12+2 transmission is equipped. |
-| **Server fails to bind Port 5005** | Zombie process holding port | Run `taskkill /f /im ets2-controller.exe` in cmd, then restart server. |
-| **Phone disconnected / searching** | Windows Firewall blocking UDP | Allow `ets2-controller.exe` in Windows Defender Firewall for Private networks. |
-
+| Symptom | Cause | Fix |
+|:---|:---|:---|
+| **`Missing device sdk.ets2_phone_cockpit` in ETS2** | DLL missing or ETS2 hadn't consented to SDK yet | Copy `ets2_phone_plugin.dll` into `<ETS2>\bin\win_x64\plugins\`, launch ETS2, click **OK** on *"Request to use advanced SDK features"*, exit ETS2, then run `[A]` in `start.bat`. Verify via `[L]`. |
+| **Plugin DLL missing (`No C++ compiler found`)** | GitHub clone without MSVC/`g++` | `start.bat` auto-downloads from GitHub Releases on launch or via `[C]`. |
+| **Cannot install APK (No Android Studio / No USB ADB)** | Missing SDK or USB debugging disabled | Press `[B]` in `start.bat` to open the Wi-Fi download page (`http://<PC-IP>:8099/`) in your phone browser. |
+| **Phone stuck on `NO PC`** | Public Wi-Fi firewall, VPN adapter, or AP isolation | Press `[F]` in `start.bat`, enter the non-VPN LAN IP manually (triggers automatic TCP `5005` fallback), or use **`USB 127.0.0.1`** / Phone Hotspot. |
+| **Steering stuck or drifts mid-turn** | Uncalibrated baseline or `Auto` sensor flip | Lock orientation (`Lock L`/`Lock R` in **Tuning → Cockpit**) and hold **CENTER** at your normal driving angle. |
